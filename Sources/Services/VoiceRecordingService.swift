@@ -115,10 +115,12 @@ public final class VoiceRecordingService: NSObject, ObservableObject {
 
             // Start timer to track duration
             recordingTimer = Timer.scheduledTimer(withTimeInterval: 0.1, repeats: true) { [weak self] _ in
-                guard let self else { return }
-                self.recordingDuration = self.audioRecorder?.currentTime ?? 0
-                if self.recordingDuration >= Self.maxRecordingDuration {
-                    self.stopRecording()
+                MainActor.assumeIsolated {
+                    guard let self else { return }
+                    self.recordingDuration = self.audioRecorder?.currentTime ?? 0
+                    if self.recordingDuration >= Self.maxRecordingDuration {
+                        _ = self.stopRecording()
+                    }
                 }
             }
 
@@ -201,8 +203,10 @@ public final class VoiceRecordingService: NSObject, ObservableObject {
 
             // Start timer to track progress
             playbackTimer = Timer.scheduledTimer(withTimeInterval: 0.1, repeats: true) { [weak self] _ in
-                guard let self, let player = self.audioPlayer else { return }
-                self.playbackProgress = player.currentTime / player.duration
+                MainActor.assumeIsolated {
+                    guard let self, let player = self.audioPlayer else { return }
+                    self.playbackProgress = player.currentTime / player.duration
+                }
             }
 
             log("Started playback", category: .general)

@@ -34,6 +34,10 @@ public final class ChatNotificationBridge: ObservableObject {
     /// Whether Pool Chat window is currently visible (active and focused)
     /// Updated by PoolChatViewModel when window state changes
     @Published public private(set) var isPoolChatVisible: Bool = false
+
+    /// Whether the in-game chat overlay is active (suppresses system notifications)
+    /// Updated by GameChatOverlayViewModel when the overlay appears/disappears
+    @Published public var isGameChatActive: Bool = false
     
     /// Whether the bridge is actively monitoring for messages
     @Published public private(set) var isActive: Bool = false
@@ -116,6 +120,12 @@ public final class ChatNotificationBridge: ObservableObject {
         // Don't notify if Pool Chat is visible
         guard !isPoolChatVisible else {
             log("[NOTIFICATION-BRIDGE] Skipping notification - Pool Chat is visible", level: .debug, category: .runtime)
+            return
+        }
+
+        // Don't notify if in-game chat overlay is active (it has its own toast/badge)
+        guard !isGameChatActive else {
+            log("[NOTIFICATION-BRIDGE] Skipping notification - game chat overlay is active", level: .debug, category: .runtime)
             return
         }
         

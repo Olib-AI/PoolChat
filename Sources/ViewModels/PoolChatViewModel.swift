@@ -2251,6 +2251,12 @@ public final class PoolChatViewModel: ObservableObject, PoolChatAppLifecycle {
             }
         }
 
+        // Suppress system notifications when in-game chat overlay is handling them
+        if shouldNotify && ChatNotificationBridge.shared.isGameChatActive {
+            shouldNotify = false
+            log("[NOTIFICATION] Suppressed - game chat overlay is active", category: .poolChat)
+        }
+
         // Send notification if needed
         if shouldNotify {
             log("[NOTIFICATION] Sending notification - type: \(notificationType), sender: \(message.senderName)", category: .poolChat)
