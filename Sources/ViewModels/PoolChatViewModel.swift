@@ -164,6 +164,10 @@ public final class PoolChatViewModel: ObservableObject, PoolChatAppLifecycle {
 
     private var cancellables = Set<AnyCancellable>()
 
+    /// Tracked setup tasks that use Task.sleep for stabilization delays.
+    /// Cancelled when setPoolManager is called again or on terminate.
+    private var setupTasks: [Task<Void, Never>] = []
+
     /// Group chat messages (kept separate for switching between modes)
     private var groupMessages: [RichChatMessage] = []
 
@@ -238,6 +242,10 @@ public final class PoolChatViewModel: ObservableObject, PoolChatAppLifecycle {
     /// We now defer ALL operations (including localPeerID access and history loading) into
     /// the stabilization Task when there's an existing session.
     public func setPoolManager(_ manager: ConnectionPoolManager) {
+        // Cancel any in-flight setup tasks from a previous call
+        setupTasks.forEach { $0.cancel() }
+        setupTasks.removeAll()
+
         self.poolManager = manager
 
         // CRITICAL: Check if there's an existing MC session BEFORE any other operations.
@@ -257,9 +265,10 @@ public final class PoolChatViewModel: ObservableObject, PoolChatAppLifecycle {
             // triggering MC errors before the 500ms stabilization delay completed.
             isStabilizingConnection = true
 
-            Task { @MainActor in
+            let task = Task { @MainActor in
                 // Phase 1: Wait for MC session to stabilize (1000ms)
                 try? await Task.sleep(for: .milliseconds(1000))
+                guard !Task.isCancelled else { return }
 
                 // Verify manager is still valid after delay
                 guard self.poolManager != nil else {
@@ -282,6 +291,7 @@ public final class PoolChatViewModel: ObservableObject, PoolChatAppLifecycle {
                 // Phase 3: Additional delay before sending any MC messages
                 let additionalDelayMs = manager.isHost ? 100 : 250
                 try? await Task.sleep(for: .milliseconds(additionalDelayMs))
+                guard !Task.isCancelled else { return }
 
                 // Re-check connection state (may have disconnected during delays)
                 guard let pm = self.poolManager else {
@@ -323,6 +333,7 @@ public final class PoolChatViewModel: ObservableObject, PoolChatAppLifecycle {
                 log("[SETUP] setPoolManager completed, poolState: \(manager.poolState), isHost: \(manager.isHost)", category: .network)
                 log("[SETUP] currentSession: \(manager.currentSession?.name ?? "nil"), connectedPeers: \(manager.connectedPeers.count)", category: .network)
             }
+            setupTasks.append(task)
         } else {
             // No existing session - safe to set up bindings immediately
             // MC isn't active yet, so all operations are safe
@@ -412,8 +423,10 @@ public final class PoolChatViewModel: ObservableObject, PoolChatAppLifecycle {
         log("[E2E] Initiating key exchange with \(existingPeers.count) existing peer(s)", category: .security)
 
         // Stagger key exchanges to avoid flooding MC session
-        Task { @MainActor in
+        let task = Task { @MainActor in
             for (index, peer) in existingPeers.enumerated() {
+                guard !Task.isCancelled else { return }
+
                 // Check if we already have a key for this peer
                 if self.encryptionService.hasKeyFor(peerID: peer.id) {
                     log("[E2E] Already have key for peer: \(peer.displayName), skipping", category: .security)
@@ -424,6 +437,7 @@ public final class PoolChatViewModel: ObservableObject, PoolChatAppLifecycle {
                 // (except for the first peer)
                 if index > 0 {
                     try? await Task.sleep(for: .milliseconds(50))
+                    guard !Task.isCancelled else { return }
                 }
 
                 // Re-check pool state is still valid
@@ -436,6 +450,7 @@ public final class PoolChatViewModel: ObservableObject, PoolChatAppLifecycle {
                 self.performKeyExchange(with: peer)
             }
         }
+        setupTasks.append(task)
     }
 
     /// Called when the Pool Chat window is reopened
@@ -486,8 +501,9 @@ public final class PoolChatViewModel: ObservableObject, PoolChatAppLifecycle {
 
         // DTLS GUARD: Delay history request to ensure DTLS transport is stable
         // Key exchange happens at 3000ms, so we wait 4000ms total from peer connection
-        Task { @MainActor in
+        let task = Task { @MainActor in
             try? await Task.sleep(for: .milliseconds(4000))
+            guard !Task.isCancelled else { return }
 
             // Re-check state after DTLS delay
             guard let pm = self.poolManager,
@@ -512,6 +528,7 @@ public final class PoolChatViewModel: ObservableObject, PoolChatAppLifecycle {
 
             pm.sendMessage(message, to: [hostID])
         }
+        setupTasks.append(task)
     }
 
     private func setupTextInputBinding() {
@@ -646,9 +663,10 @@ public final class PoolChatViewModel: ObservableObject, PoolChatAppLifecycle {
 
         // Set up relay service if already connected (with stabilization delay)
         if (poolManager.poolState == .hosting || poolManager.poolState == .connected) && self.relayService == nil {
-            Task { @MainActor [weak self] in
+            let task = Task { @MainActor [weak self] in
                 // Additional 100ms delay for relay service to be extra safe
                 try? await Task.sleep(for: .milliseconds(100))
+                guard !Task.isCancelled else { return }
                 guard let self = self, let manager = self.poolManager else { return }
                 guard self.relayService == nil else { return }
                 guard manager.poolState == .hosting || manager.poolState == .connected else { return }
@@ -656,6 +674,7 @@ public final class PoolChatViewModel: ObservableObject, PoolChatAppLifecycle {
                 self.setupRelayService(manager)
                 log("[RELAY] MeshRelayService set up during initial binding setup", category: .network)
             }
+            setupTasks.append(task)
         }
     }
 
@@ -864,6 +883,8 @@ public final class PoolChatViewModel: ObservableObject, PoolChatAppLifecycle {
         isWindowVisible = false
         voiceService.stop()
         voiceService.cancelRecording()
+        setupTasks.forEach { $0.cancel() }
+        setupTasks.removeAll()
         cancellables.removeAll()
 
         // Clean up relay service to prevent stale MC operations
