@@ -80,7 +80,7 @@ public final class ChatNotificationBridge: ObservableObject {
             .store(in: &cancellables)
         
         isActive = true
-        log("[NOTIFICATION-BRIDGE] Activated - localPeerID: \(localPeerID)", category: .runtime)
+        log("[NOTIFICATION-BRIDGE] Activated - localPeerID: \(localPeerID.prefix(8))...", category: .runtime)
     }
     
     /// Deactivate the bridge (called when disconnecting from pool)
@@ -149,20 +149,10 @@ public final class ChatNotificationBridge: ObservableObject {
         }
     }
     
-    /// Extract a preview string from the message payload
+    /// Extract a preview string from the message payload.
+    /// SECURITY: Returns a generic string to prevent leaking plaintext message content
+    /// in OS notifications (Notification Center, lock screen).
     private func extractMessagePreview(from message: PoolMessage) -> String {
-        let payloadData = message.payload
-
-        // Try to decode as ChatPayload
-        if let payload = try? JSONDecoder().decode(ChatPayload.self, from: payloadData) {
-            return payload.text
-        }
-
-        // Fallback to simple text extraction
-        if let text = String(data: payloadData, encoding: .utf8) {
-            return text
-        }
-
         return "New message"
     }
 }

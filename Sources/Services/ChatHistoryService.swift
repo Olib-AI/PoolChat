@@ -45,6 +45,10 @@ public final class ChatHistoryService: ObservableObject {
     /// In-memory cache of loaded conversations for faster access
     private var conversationCache: [String: ChatConversation] = [:]
 
+    /// O(1) deduplication index: maps conversation ID -> set of message UUIDs present in that conversation.
+    /// Maintained alongside conversationCache to avoid O(n) scans for duplicate checks.
+    private var messageIDIndex: [String: Set<UUID>] = [:]
+
     /// Track which session IDs are currently active
     private var activeSessionIDs: Set<String> = []
 
@@ -87,6 +91,7 @@ public final class ChatHistoryService: ObservableObject {
             let key = conversationKey(for: id)
             if let conversation = try await secureDataStore?.load(ChatConversation.self, forKey: key, category: Self.chatDataCategory) {
                 conversationCache[id] = conversation
+                messageIDIndex[id] = Set(conversation.messages.map { $0.id })
                 return conversation
             }
             return nil
@@ -120,8 +125,9 @@ public final class ChatHistoryService: ObservableObject {
                 trimmedConversation.messages.removeFirst(excess)
             }
 
-            // Update cache
+            // Update cache and dedup index
             conversationCache[conversation.id] = trimmedConversation
+            messageIDIndex[conversation.id] = Set(trimmedConversation.messages.map { $0.id })
 
             let key = conversationKey(for: conversation.id)
             try await secureDataStore?.save(trimmedConversation, forKey: key, category: Self.chatDataCategory)
@@ -135,17 +141,20 @@ public final class ChatHistoryService: ObservableObject {
     /// Invalidate cache for a conversation (forces reload from disk)
     public func invalidateCache(for conversationID: String) {
         conversationCache.removeValue(forKey: conversationID)
+        messageIDIndex.removeValue(forKey: conversationID)
     }
 
     /// Clear all cached conversations
     public func clearCache() {
         conversationCache.removeAll()
+        messageIDIndex.removeAll()
     }
 
     /// Delete a conversation
     public func deleteConversation(id: String) async {
-        // Remove from cache first to ensure consistency
+        // Remove from cache and dedup index first to ensure consistency
         conversationCache.removeValue(forKey: id)
+        messageIDIndex.removeValue(forKey: id)
 
         do {
             let key = conversationKey(for: id)
@@ -168,8 +177,8 @@ public final class ChatHistoryService: ObservableObject {
             isGroupChat: isGroupChat
         )
 
-        // Check for duplicate message by ID (O(n) but persistence is less frequent)
-        if conversation.messages.contains(where: { $0.id == message.id }) {
+        // O(1) deduplication check using the message ID index
+        if messageIDIndex[conversationID]?.contains(message.id) == true {
             log("[DEDUP] Skipping duplicate message in persistence: \(message.id)", level: .debug, category: .security)
             return
         }
@@ -406,7 +415,7 @@ public final class ChatHistoryService: ObservableObject {
         let conversationID = ChatConversation.hostBasedGroupConversationID(hostPeerID: hostPeerID)
         await deleteConversation(id: conversationID)
 
-        log("Deleted group chat for host: \(hostPeerID)", category: .security)
+        log("Deleted group chat for host: \(hostPeerID.prefix(8))...", category: .security)
     }
 
     /// Load group conversation by host peer ID (host-based storage)
@@ -421,33 +430,33 @@ public final class ChatHistoryService: ObservableObject {
         return await getMessages(for: conversationID)
     }
 
-    /// Get all messages for a host-based group (for history sync)
-    public func getHostBasedGroupMessagesForSync(hostPeerID: String) async -> [RichChatPayload] {
+    /// Get recent messages for a host-based group (for history sync).
+    ///
+    /// Returns text content and media reference keys only -- raw media data is excluded
+    /// to prevent OOM. Peers can request media on-demand after initial sync.
+    ///
+    /// - Parameters:
+    ///   - hostPeerID: The host peer ID that identifies the group.
+    ///   - limit: Maximum number of recent messages to include (default 100).
+    /// - Returns: An array of ``RichChatPayload`` with media data fields set to `nil`.
+    public func getHostBasedGroupMessagesForSync(hostPeerID: String, limit: Int = ChatHistoryService.defaultSyncLimit) async -> [RichChatPayload] {
         let conversationID = ChatConversation.hostBasedGroupConversationID(hostPeerID: hostPeerID)
         guard let conversation = await loadConversation(id: conversationID) else {
             return []
         }
 
+        let candidateMessages = conversation.messages.filter { $0.contentType != .system }
+        let recentMessages = candidateMessages.suffix(limit)
+
         var payloads: [RichChatPayload] = []
         var seenIDs: Set<UUID> = []
 
-        for stored in conversation.messages {
-            guard stored.contentType != .system else { continue }
+        for stored in recentMessages {
             guard !seenIDs.contains(stored.id) else { continue }
             seenIDs.insert(stored.id)
 
-            var imageData: Data?
-            var voiceData: Data?
-
-            if let imageKey = stored.imageDataKey {
-                imageData = await loadMediaData(key: imageKey)
-            }
-
-            if let voiceKey = stored.voiceDataKey {
-                voiceData = await loadMediaData(key: voiceKey)
-            }
-
-            let message = stored.toRichChatMessage(imageData: imageData, voiceData: voiceData)
+            // Do NOT load raw media data for sync to prevent OOM.
+            let message = stored.toRichChatMessage(imageData: nil, voiceData: nil)
             payloads.append(RichChatPayload(from: message))
         }
 
@@ -469,8 +478,9 @@ public final class ChatHistoryService: ObservableObject {
             }
         }
 
-        // Clear cache
+        // Clear cache and dedup index
         conversationCache.removeAll()
+        messageIDIndex.removeAll()
 
         log("Cleared all chat history", category: .security)
     }
@@ -503,48 +513,50 @@ public final class ChatHistoryService: ObservableObject {
         log("Cleared group history for stableID: \(stableConversationID)", category: .security)
     }
 
-    /// Get all messages for a session (for host to send to new members)
-    /// Returns RichChatPayload array suitable for transmission
-    /// Ensures unique messages by ID (no duplicates)
-    public func getSessionMessagesForSync(sessionID: String) async -> [RichChatPayload] {
+    /// Default maximum number of recent messages to include in a history sync payload.
+    /// Peers can request older messages or specific media on-demand after initial sync.
+    public static let defaultSyncLimit = 100
+
+    /// Get recent messages for a session (for host to send to new members).
+    ///
+    /// Returns text content and media reference keys only -- raw image/voice data is NOT
+    /// included to prevent OOM when syncing conversations with many media messages.
+    /// Peers should request media on-demand using the media reference keys.
+    ///
+    /// - Parameters:
+    ///   - sessionID: The pool session ID.
+    ///   - limit: Maximum number of recent messages to include (default 100).
+    /// - Returns: An array of ``RichChatPayload`` with media data fields set to `nil`.
+    public func getSessionMessagesForSync(sessionID: String, limit: Int = ChatHistoryService.defaultSyncLimit) async -> [RichChatPayload] {
         let conversationID = ChatConversation.groupConversationID(sessionID: sessionID)
         guard let conversation = await loadConversation(id: conversationID) else {
             return []
         }
 
-        // Convert stored messages to payloads, ensuring uniqueness by ID
+        // Take only the most recent `limit` non-system messages to cap payload size.
+        let candidateMessages = conversation.messages.filter { $0.contentType != .system }
+        let recentMessages = candidateMessages.suffix(limit)
+
         var payloads: [RichChatPayload] = []
         var seenIDs: Set<UUID> = []
 
-        for stored in conversation.messages {
-            // Skip system messages for sync
-            guard stored.contentType != .system else { continue }
-
-            // Skip duplicates (shouldn't happen but extra safety)
+        for stored in recentMessages {
             guard !seenIDs.contains(stored.id) else {
                 log("[DEDUP] getSessionMessagesForSync: skipping duplicate stored message: \(stored.id)", level: .debug, category: .security)
                 continue
             }
             seenIDs.insert(stored.id)
 
-            // Load media data if present (for full sync)
-            var imageData: Data?
-            var voiceData: Data?
-
-            if let imageKey = stored.imageDataKey {
-                imageData = await loadMediaData(key: imageKey)
-            }
-
-            if let voiceKey = stored.voiceDataKey {
-                voiceData = await loadMediaData(key: voiceKey)
-            }
-
-            let message = stored.toRichChatMessage(imageData: imageData, voiceData: voiceData)
+            // SECURITY/PERFORMANCE: Do NOT load raw media data for sync.
+            // Pass nil for imageData/voiceData to avoid OOM with large media collections.
+            // The imageDataKey/voiceDataKey are preserved in the stored message metadata
+            // so peers can request media on-demand after receiving the sync payload.
+            let message = stored.toRichChatMessage(imageData: nil, voiceData: nil)
             let payload = RichChatPayload(from: message)
             payloads.append(payload)
         }
 
-        log("[DEDUP] getSessionMessagesForSync: returning \(payloads.count) unique messages for session \(sessionID)", level: .debug, category: .security)
+        log("[SYNC] getSessionMessagesForSync: returning \(payloads.count) messages (limit: \(limit)) for session \(sessionID)", level: .debug, category: .security)
         return payloads
     }
 

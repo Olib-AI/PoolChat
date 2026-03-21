@@ -44,6 +44,34 @@ public final class VoiceRecordingService: NSObject, ObservableObject {
         // Setting up AVAudioSession synchronously during init can HANG on macOS
         // if the audio system is in a bad state or another app holds the device.
         // This was causing Pool Chat to freeze immediately after opening.
+
+        // Clean up any leftover voice recordings from previous sessions
+        // (e.g., if the app crashed before cleanup could run)
+        self.cleanupStaleVoiceFiles()
+    }
+
+    /// Removes any leftover voice_*.m4a files from the temp directory.
+    /// These can persist if the app crashes mid-recording before cleanup runs.
+    private func cleanupStaleVoiceFiles() {
+        let tempDir = FileManager.default.temporaryDirectory
+        do {
+            let contents = try FileManager.default.contentsOfDirectory(
+                at: tempDir,
+                includingPropertiesForKeys: nil,
+                options: .skipsHiddenFiles
+            )
+            let staleFiles = contents.filter { $0.lastPathComponent.hasPrefix("voice_") && $0.pathExtension == "m4a" }
+            for file in staleFiles {
+                do {
+                    try FileManager.default.removeItem(at: file)
+                    log("Cleaned up stale voice recording: \(file.lastPathComponent)", category: .general)
+                } catch {
+                    log("Failed to clean up stale voice recording \(file.lastPathComponent): \(error.localizedDescription)", level: .error, category: .general)
+                }
+            }
+        } catch {
+            log("Failed to enumerate temp directory for voice cleanup: \(error.localizedDescription)", level: .error, category: .general)
+        }
     }
 
     /// Configure audio session for recording - called lazily before first recording.
@@ -110,6 +138,17 @@ public final class VoiceRecordingService: NSObject, ObservableObject {
             audioRecorder?.delegate = self
             audioRecorder?.record()
 
+            // Set NSFileProtectionComplete so the temp file is encrypted at rest
+            // and inaccessible when the device is locked
+            do {
+                try FileManager.default.setAttributes(
+                    [.protectionKey: FileProtectionType.complete],
+                    ofItemAtPath: url.path
+                )
+            } catch {
+                log("Failed to set file protection on voice recording: \(error.localizedDescription)", level: .warning, category: .general)
+            }
+
             isRecording = true
             recordingDuration = 0
 
@@ -151,8 +190,20 @@ public final class VoiceRecordingService: NSObject, ObservableObject {
             return nil
         }
 
-        // Clean up the temporary file
-        try? FileManager.default.removeItem(at: url)
+        // Clean up the temporary file — log and retry on failure to avoid leaving plaintext audio on disk
+        do {
+            try FileManager.default.removeItem(at: url)
+        } catch {
+            log("Failed to remove voice recording temp file: \(error.localizedDescription)", level: .error, category: .general)
+            // Retry removal once after a brief delay
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+                do {
+                    try FileManager.default.removeItem(at: url)
+                } catch {
+                    log("Retry failed to remove voice recording temp file: \(error.localizedDescription)", level: .error, category: .general)
+                }
+            }
+        }
         recordingURL = nil
 
         log("Stopped recording, duration: \(duration)s, size: \(data.count) bytes", category: .general)
@@ -171,9 +222,13 @@ public final class VoiceRecordingService: NSObject, ObservableObject {
         isRecording = false
         recordingDuration = 0
 
-        // Delete the temporary file
+        // Delete the temporary file — log errors to avoid leaving plaintext audio on disk
         if let url = recordingURL {
-            try? FileManager.default.removeItem(at: url)
+            do {
+                try FileManager.default.removeItem(at: url)
+            } catch {
+                log("Failed to remove cancelled voice recording temp file: \(error.localizedDescription)", level: .error, category: .general)
+            }
         }
         recordingURL = nil
 

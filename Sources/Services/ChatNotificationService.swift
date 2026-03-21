@@ -5,7 +5,7 @@
 // StealthOS - stealthos.app
 
 import Foundation
-import UserNotifications
+@preconcurrency import UserNotifications
 
 /// Types of chat notifications
 public enum ChatNotificationType: Sendable {
@@ -174,24 +174,26 @@ public actor ChatNotificationService {
         let content = UNMutableNotificationContent()
 
         // Build deep link data
+        // SECURITY: Never include actual message content in notification body to prevent
+        // plaintext leakage via Notification Center and lock screen.
         let chatType: String
         switch type {
         case .privateMessage:
             content.title = senderName
-            content.body = truncateMessagePreview(messagePreview)
+            content.body = "New message"
             content.categoryIdentifier = "PRIVATE_MESSAGE"
             chatType = "private"
 
         case .mention:
             content.title = "\(senderName) mentioned you"
-            content.body = truncateMessagePreview(messagePreview)
+            content.body = "New message"
             content.categoryIdentifier = "MENTION"
             chatType = "mention"
 
         case .groupMessage:
             content.title = "Pool Chat"
             content.subtitle = senderName
-            content.body = truncateMessagePreview(messagePreview)
+            content.body = "New message"
             content.categoryIdentifier = "GROUP_MESSAGE"
             chatType = "group"
         }

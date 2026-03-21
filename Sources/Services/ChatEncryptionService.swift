@@ -115,8 +115,10 @@ public final class ChatEncryptionService: @unchecked Sendable {
         lock.withLock {
             _privateKey = Curve25519.KeyAgreement.PrivateKey()
             _peerKeys.removeAll()
+            _knownPeerKeys.removeAll()
+            _trustedPeerFingerprints.removeAll()
         }
-        log("Regenerated encryption keys", category: .security)
+        log("Regenerated encryption keys and cleared TOFU state", category: .security)
     }
 
     /// Full session teardown: regenerates keys AND clears all TOFU peer state.
@@ -191,8 +193,14 @@ public final class ChatEncryptionService: @unchecked Sendable {
             let saltHash = SHA256.hash(data: combinedKeys)
             let salt = Data(saltHash)
 
-            // Derive a symmetric key from the shared secret using HKDF
-            let sharedInfo = Data("E2E-Encryption".utf8)
+            // Derive a symmetric key from the shared secret using HKDF.
+            // Include both peer public keys (sorted for determinism) in sharedInfo
+            // to bind the derived key to this specific peer pair, preventing
+            // cross-session key confusion.
+            let sortedKeys = [localPublicKeyData, peerKeyRaw].sorted { $0.lexicographicallyPrecedes($1) }
+            var sharedInfo = Data("E2E-Encryption-v1".utf8)
+            sharedInfo.append(sortedKeys[0])
+            sharedInfo.append(sortedKeys[1])
             let symmetricKey = sharedSecret.hkdfDerivedSymmetricKey(
                 using: SHA256.self,
                 salt: salt,
@@ -204,7 +212,7 @@ public final class ChatEncryptionService: @unchecked Sendable {
                 _peerKeys[peerID] = symmetricKey
             }
 
-            log("Key exchange completed with peer: \(peerID)", category: .security)
+            log("Key exchange completed with peer: \(peerID.prefix(8))...", category: .security)
             return true
         } catch {
             log("Key exchange failed: \(error.localizedDescription)", category: .security)
@@ -214,10 +222,10 @@ public final class ChatEncryptionService: @unchecked Sendable {
 
     /// Remove a peer's key (when they disconnect)
     public func removePeerKey(peerID: String) {
-        lock.withLock {
+        _ = lock.withLock {
             _peerKeys.removeValue(forKey: peerID)
         }
-        log("Removed key for peer: \(peerID)", category: .security)
+        log("Removed key for peer: \(peerID.prefix(8))...", category: .security)
     }
 
     /// Clear all peer keys
@@ -237,7 +245,7 @@ public final class ChatEncryptionService: @unchecked Sendable {
     /// - Returns: Encrypted data (nonce + ciphertext + tag) or nil if encryption failed
     public func encrypt(_ data: Data, for peerID: String) -> Data? {
         guard let symmetricKey = lock.withLock({ _peerKeys[peerID] }) else {
-            log("No key found for peer: \(peerID)", category: .security)
+            log("No key found for peer: \(peerID.prefix(8))...", category: .security)
             return nil
         }
 
@@ -279,7 +287,7 @@ public final class ChatEncryptionService: @unchecked Sendable {
     /// - Returns: Decrypted data or nil if decryption failed
     public func decrypt(_ encryptedData: Data, from peerID: String) -> Data? {
         guard let symmetricKey = lock.withLock({ _peerKeys[peerID] }) else {
-            log("No key found for peer: \(peerID)", category: .security)
+            log("No key found for peer: \(peerID.prefix(8))...", category: .security)
             return nil
         }
 
@@ -337,7 +345,7 @@ public final class ChatEncryptionService: @unchecked Sendable {
             guard let symmetricKey = _peerKeys[peerID] else { return nil }
             // We can't directly hash SymmetricKey, so we hash a derived HMAC value
             let testData = Data("fingerprint-check".utf8)
-            guard let hmac = try? HMAC<SHA256>.authenticationCode(for: testData, using: symmetricKey) else {
+            guard let hmac = Optional(HMAC<SHA256>.authenticationCode(for: testData, using: symmetricKey)) else {
                 return nil
             }
             return Data(hmac).prefix(8).map { String(format: "%02X", $0) }.joined(separator: ":")
@@ -362,7 +370,7 @@ public final class ChatEncryptionService: @unchecked Sendable {
     ) -> RelayedKeyExchangePayload? {
         let localPublicKey = lock.withLock { _privateKey.publicKey.rawRepresentation }
 
-        log("[E2E] Initiating relayed key exchange with peer: \(targetPeerID)", category: .security)
+        log("[E2E] Initiating relayed key exchange with peer: \(targetPeerID.prefix(8))...", category: .security)
 
         return RelayedKeyExchangePayload(
             publicKey: localPublicKey,
@@ -394,7 +402,7 @@ public final class ChatEncryptionService: @unchecked Sendable {
     ) -> RelayedKeyExchangePayload? {
         // Verify this payload is intended for us
         guard payload.targetPeerID == ourPeerID else {
-            log("[E2E] Relayed key exchange not intended for us. Target: \(payload.targetPeerID), Our ID: \(ourPeerID)",
+            log("[E2E] Relayed key exchange not intended for us. Target: \(payload.targetPeerID.prefix(8))..., Our ID: \(ourPeerID.prefix(8))...",
                 level: .error, category: .security)
             return nil
         }
@@ -404,19 +412,19 @@ public final class ChatEncryptionService: @unchecked Sendable {
 
         // Validate the public key
         guard validatePublicKey(payload.publicKey) else {
-            log("[E2E] Relayed key exchange failed validation from peer: \(remotePeerID)",
+            log("[E2E] Relayed key exchange failed validation from peer: \(remotePeerID.prefix(8))...",
                 level: .error, category: .security)
             return nil
         }
 
         // Derive and store the shared secret
         guard deriveSharedSecret(from: payload.publicKey, peerID: remotePeerID) else {
-            log("[E2E] Failed to derive shared secret for relayed exchange with peer: \(remotePeerID)",
+            log("[E2E] Failed to derive shared secret for relayed exchange with peer: \(remotePeerID.prefix(8))...",
                 level: .error, category: .security)
             return nil
         }
 
-        log("[E2E] Relayed key exchange \(payload.isResponse ? "response" : "request") processed for peer: \(remotePeerID)",
+        log("[E2E] Relayed key exchange \(payload.isResponse ? "response" : "request") processed for peer: \(remotePeerID.prefix(8))...",
             category: .security)
 
         // If this was a request, send back our public key as a response
@@ -495,8 +503,14 @@ public final class ChatEncryptionService: @unchecked Sendable {
             let saltHash = SHA256.hash(data: combinedKeys)
             let salt = Data(saltHash)
 
-            // Derive a symmetric key from the shared secret using HKDF
-            let sharedInfo = Data("E2E-Encryption".utf8)
+            // Derive a symmetric key from the shared secret using HKDF.
+            // Include both peer public keys (sorted for determinism) in sharedInfo
+            // to bind the derived key to this specific peer pair, preventing
+            // cross-session key confusion.
+            let sortedKeysForInfo = [localPublicKeyData, peerPubKeyData].sorted { $0.lexicographicallyPrecedes($1) }
+            var sharedInfo = Data("E2E-Encryption-v1".utf8)
+            sharedInfo.append(sortedKeysForInfo[0])
+            sharedInfo.append(sortedKeysForInfo[1])
             let symmetricKey = sharedSecret.hkdfDerivedSymmetricKey(
                 using: SHA256.self,
                 salt: salt,
@@ -535,7 +549,7 @@ public final class ChatEncryptionService: @unchecked Sendable {
             // We have seen this peer before — compare keys
             if existingKey != peerPublicKeyData {
                 let oldFingerprint = Self.fingerprint(of: existingKey)
-                log("[E2E] TOFU WARNING: Peer \(peerID) public key changed! Old: \(oldFingerprint), New: \(fingerprint). Possible MITM or key regeneration.",
+                log("[E2E] TOFU WARNING: Peer \(peerID.prefix(8))... public key changed! Possible MITM or key regeneration.",
                     level: .warning, category: .security)
                 peerKeyEvents.send(.peerKeyChanged(peerID: peerID, oldFingerprint: oldFingerprint, newFingerprint: fingerprint))
 
@@ -552,7 +566,7 @@ public final class ChatEncryptionService: @unchecked Sendable {
             lock.withLock {
                 _knownPeerKeys[peerID] = peerPublicKeyData
             }
-            log("[E2E] TOFU: New peer \(peerID) trusted on first use, fingerprint: \(fingerprint)", category: .security)
+            log("[E2E] TOFU: New peer \(peerID.prefix(8))... trusted on first use", category: .security)
             peerKeyEvents.send(.newPeerTrusted(peerID: peerID, fingerprint: fingerprint))
         }
     }
@@ -578,10 +592,10 @@ public final class ChatEncryptionService: @unchecked Sendable {
         }
 
         if matches {
-            log("[E2E] TOFU: Peer \(peerID) fingerprint verified successfully", category: .security)
+            log("[E2E] TOFU: Peer \(peerID.prefix(8))... fingerprint verified successfully", category: .security)
             peerKeyEvents.send(.peerVerified(peerID: peerID))
         } else {
-            log("[E2E] TOFU: Peer \(peerID) fingerprint verification FAILED", level: .warning, category: .security)
+            log("[E2E] TOFU: Peer \(peerID.prefix(8))... fingerprint verification FAILED", level: .warning, category: .security)
         }
 
         return matches

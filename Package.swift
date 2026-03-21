@@ -16,5 +16,10 @@ let package = Package(
             dependencies: ["ConnectionPool"],
             path: "Sources"
         ),
+        .testTarget(
+            name: "PoolChatTests",
+            dependencies: ["PoolChat"],
+            path: "Tests/PoolChatTests"
+        ),
     ]
 )

@@ -7,6 +7,7 @@
 import Foundation
 import SwiftUI
 import Combine
+import CryptoKit
 import PhotosUI
 import UserNotifications
 import ConnectionPool
@@ -100,6 +101,10 @@ public final class PoolChatViewModel: ObservableObject, PoolChatAppLifecycle {
 
     /// Whether history is currently loading (for UI feedback)
     @Published public var isLoadingHistory: Bool = false
+
+    /// Number of messages pending encryption key establishment.
+    /// When > 0, UI should indicate that messages are waiting to be sent.
+    @Published public var pendingEncryptionCount: Int = 0
 
     // MARK: - Host-Based Group Chat List Properties
 
@@ -211,6 +216,25 @@ public final class PoolChatViewModel: ObservableObject, PoolChatAppLifecycle {
 
     /// Track if we've already requested history sync for this session
     private var historyRequestedForSession: String?
+
+    // MARK: - Pending Encryption Queue
+    //
+    // Messages queued when E2E encryption keys have not yet been established with the target peer(s).
+    // When key exchange completes, the queue is flushed automatically. Messages are NEVER sent unencrypted.
+
+    /// Queued outgoing payloads waiting for encryption keys to be established.
+    private struct PendingEncryptedMessage {
+        let plainData: Data
+        let messageType: EncryptedMessageType
+        let isPrivateChat: Bool
+        let targetPeerIDs: [String]
+    }
+
+    /// Pending messages awaiting key exchange completion.
+    private var pendingEncryptionQueue: [PendingEncryptedMessage] = []
+
+    /// Maximum number of pending messages to prevent unbounded memory growth.
+    private static let maxPendingMessages: Int = 50
 
     // MARK: - PoolChatAppLifecycle
 
@@ -369,14 +393,10 @@ public final class PoolChatViewModel: ObservableObject, PoolChatAppLifecycle {
         let sessionID = session.id.uuidString
         currentSessionID = sessionID
 
-        // Create stable conversation ID for persistent history across pool reconnections
-        let stableID = ChatConversation.stableGroupConversationID(poolName: session.name, hostPeerID: session.hostPeerID)
-        stableGroupConvID = stableID
-
-        // NEW: Set the host-based conversation ID (simpler, more stable)
+        // Set the host-based conversation ID (simpler, more stable)
         let hostBasedID = ChatConversation.hostBasedGroupConversationID(hostPeerID: session.hostPeerID)
         hostBasedGroupConvID = hostBasedID
-        log("[SETUP] Set currentSessionID: \(sessionID), hostBasedGroupConvID: \(hostBasedID)", category: .network)
+        log("[SETUP] Set currentSessionID: \(sessionID), hostBasedGroupConvID set", category: .network)
 
         if #available(macOS 14.0, iOS 17.0, *) {
             // Mark session as active to prevent accidental clearing
@@ -446,7 +466,7 @@ public final class PoolChatViewModel: ObservableObject, PoolChatAppLifecycle {
                     return
                 }
 
-                log("[E2E] Sending public key to existing peer: \(peer.displayName) (id: \(peer.id))", category: .security)
+                log("[E2E] Sending public key to existing peer: \(peer.displayName) (id: \(peer.id.prefix(8))...)", category: .security)
                 self.performKeyExchange(with: peer)
             }
         }
@@ -704,6 +724,13 @@ public final class PoolChatViewModel: ObservableObject, PoolChatAppLifecycle {
         // Set current pool if already connected
         if let session = manager.currentSession {
             newRelayService.setCurrentPool(session.id)
+            // Derive pool shared secret from the local encryption key material.
+            // This secret is NOT the pool UUID (which is public) but is derived from
+            // cryptographic material that observers cannot access.
+            let localPublicKey = encryptionService.publicKey
+            newRelayService.poolSharedSecret = Self.derivePoolSharedSecret(
+                localPublicKey: localPublicKey, poolID: session.id
+            )
         }
 
         // Subscribe to relay service publishers - handle envelopes destined for us
@@ -722,7 +749,7 @@ public final class PoolChatViewModel: ObservableObject, PoolChatAppLifecycle {
             }
             .store(in: &cancellables)
 
-        log("[RELAY] MeshRelayService initialized for peer: \(manager.localPeerID)", category: .network)
+        log("[RELAY] MeshRelayService initialized for peer: \(manager.localPeerID.prefix(8))...", category: .network)
     }
 
     private func setupVoiceServiceBindings() {
@@ -777,21 +804,21 @@ public final class PoolChatViewModel: ObservableObject, PoolChatAppLifecycle {
                     historyLoadedForSession = nil
                     historyRequestedForSession = nil
 
-                    // Create stable conversation ID for persistent history across pool reconnections
-                    let stableID = ChatConversation.stableGroupConversationID(poolName: session.name, hostPeerID: session.hostPeerID)
-                    stableGroupConvID = stableID
-
-                    // NEW: Set the host-based conversation ID (simpler, more stable)
+                    // Set the host-based conversation ID (simpler, more stable)
                     let hostBasedID = ChatConversation.hostBasedGroupConversationID(hostPeerID: session.hostPeerID)
                     hostBasedGroupConvID = hostBasedID
-                    log("[STATE] Set hostBasedGroupConvID: \(hostBasedID) for session: \(sessionID)", category: .network)
+                    log("[STATE] Set hostBasedGroupConvID for session: \(sessionID)", category: .network)
 
                     // Clear deduplication sets for new session
                     seenGroupMessageIDs.removeAll()
                     // Keep private message IDs as they are peer-based, not session-based
 
-                    // Update relay service with new pool ID
+                    // Update relay service with new pool ID and shared secret
                     relayService?.setCurrentPool(session.id)
+                    let localPublicKey = encryptionService.publicKey
+                    relayService?.poolSharedSecret = Self.derivePoolSharedSecret(
+                        localPublicKey: localPublicKey, poolID: session.id
+                    )
 
                     if #available(macOS 14.0, iOS 17.0, *) {
                         chatHistoryService.markSessionActive(sessionID)
@@ -1093,23 +1120,36 @@ public final class PoolChatViewModel: ObservableObject, PoolChatAppLifecycle {
         }
     }
 
+    /// Maximum total reactor entries per message across all emojis to prevent memory exhaustion
+    private static let maxReactorsPerMessage = 100
+
     /// Handle incoming reaction update
-    private func handleReactionUpdate(_ payload: ReactionUpdatePayload) {
+    /// SECURITY: Uses the transport-authenticated sender identity instead of the self-reported
+    /// `payload.peerID` to prevent reaction spoofing. Also enforces a cap on total reactors
+    /// per message to prevent memory exhaustion attacks.
+    private func handleReactionUpdate(_ payload: ReactionUpdatePayload, authenticatedSenderID: String) {
         guard let index = findMessageIndex(id: payload.messageID) else { return }
 
         var message = getMessage(at: index)
         var reactions = message.reactions
 
+        // Use authenticated sender identity, not the self-reported peerID from the payload
+        let senderID = authenticatedSenderID
+
         if payload.isAdding {
+            // Enforce cap on total reactor entries per message to prevent memory exhaustion
+            let totalReactors = reactions.values.reduce(0) { $0 + $1.count }
+            guard totalReactors < Self.maxReactorsPerMessage else { return }
+
             if reactions[payload.emoji] != nil {
-                if !reactions[payload.emoji]!.contains(payload.peerID) {
-                    reactions[payload.emoji]?.append(payload.peerID)
+                if !reactions[payload.emoji]!.contains(senderID) {
+                    reactions[payload.emoji]?.append(senderID)
                 }
             } else {
-                reactions[payload.emoji] = [payload.peerID]
+                reactions[payload.emoji] = [senderID]
             }
         } else {
-            reactions[payload.emoji]?.removeAll { $0 == payload.peerID }
+            reactions[payload.emoji]?.removeAll { $0 == senderID }
             if reactions[payload.emoji]?.isEmpty == true {
                 reactions.removeValue(forKey: payload.emoji)
             }
@@ -1238,16 +1278,16 @@ public final class PoolChatViewModel: ObservableObject, PoolChatAppLifecycle {
     }
 
     /// Handle incoming poll vote update
-    private func handlePollVoteUpdate(_ payload: PollVotePayload) {
+    /// SECURITY: Uses the transport-authenticated sender identity instead of the self-reported
+    /// `payload.voterID` to prevent ballot stuffing via forged payloads.
+    private func handlePollVoteUpdate(_ payload: PollVotePayload, authenticatedSenderID: String) {
         guard let index = findMessageIndex(id: payload.messageID) else { return }
 
         let message = getMessage(at: index)
         guard message.contentType == .poll else { return }
 
-        // Note: Remote vote updates should always be accepted (peer already validated on their end)
-        // We bypass the allowVoteChange check for incoming updates since the sender already validated
-        guard let updatedMessage = message.withPollVote(from: payload.voterID, for: payload.option) else {
-            // If vote not allowed, silently ignore (peer may have old state)
+        // Use authenticated sender identity, not the self-reported voterID from the payload
+        guard let updatedMessage = message.withPollVote(from: authenticatedSenderID, for: payload.option) else {
             return
         }
         updateMessage(updatedMessage, at: index)
@@ -1306,7 +1346,7 @@ public final class PoolChatViewModel: ObservableObject, PoolChatAppLifecycle {
 
         // SECURITY: Check if history sync is enabled before sending any history
         guard PoolChatConfiguration.enableHistorySync else {
-            log("[SECURITY] History sync request from \(peerID) ignored - enableHistorySync is disabled", category: .security)
+            log("[SECURITY] History sync request from \(peerID.prefix(8))... ignored - enableHistorySync is disabled", category: .security)
             return
         }
 
@@ -1460,7 +1500,7 @@ public final class PoolChatViewModel: ObservableObject, PoolChatAppLifecycle {
                 if let data = try await item.loadTransferable(type: Data.self) {
                     // Compress image if needed
                     let compressedData = compressImage(data)
-                    await sendImageMessage(compressedData)
+                    sendImageMessage(compressedData)
                 }
             } catch {
                 log("Failed to load image: \(error.localizedDescription)", level: .error, category: .general)
@@ -1745,9 +1785,13 @@ public final class PoolChatViewModel: ObservableObject, PoolChatAppLifecycle {
 
     // MARK: - E2E Encryption Helpers
 
-    /// Send encrypted payload to specified peers
-    /// For group chat, this encrypts separately for each peer
-    /// Uses mesh relay when direct connection is unavailable
+    /// Send encrypted payload to specified peers.
+    /// For group chat, this encrypts separately for each peer.
+    /// Uses mesh relay when direct connection is unavailable.
+    ///
+    /// SECURITY: Messages are NEVER sent unencrypted. If encryption keys have not been
+    /// established for any target peer, those messages are queued and will be sent
+    /// automatically when key exchange completes.
     private func sendEncryptedPayload(
         _ plainData: Data,
         messageType: EncryptedMessageType,
@@ -1758,19 +1802,20 @@ public final class PoolChatViewModel: ObservableObject, PoolChatAppLifecycle {
 
         var directSentCount = 0
         var relayedCount = 0
+        var peersWithoutKey: [String] = []
         var failedPeers: [String] = []
 
         for peerID in targetPeerIDs {
             // Check if we have a key established with this peer
             guard encryptionService.hasKeyFor(peerID: peerID) else {
-                log("[E2E] No encryption key for peer: \(peerID) - cannot send encrypted message", level: .warning, category: .security)
-                failedPeers.append(peerID)
+                log("[E2E] No encryption key for peer: \(peerID.prefix(8))... - queuing message for delivery after key exchange", level: .warning, category: .security)
+                peersWithoutKey.append(peerID)
                 continue
             }
 
             // Encrypt the payload for this peer
             guard let encryptedData = encryptionService.encrypt(plainData, for: peerID) else {
-                log("[E2E] Failed to encrypt payload for peer: \(peerID)", level: .error, category: .security)
+                log("[E2E] Failed to encrypt payload for peer: \(peerID.prefix(8))...", level: .error, category: .security)
                 failedPeers.append(peerID)
                 continue
             }
@@ -1809,14 +1854,32 @@ public final class PoolChatViewModel: ObservableObject, PoolChatAppLifecycle {
                 Task {
                     let success = await relayService.sendToPeer(peerID, payload: wrappedData, poolID: poolID)
                     if !success {
-                        log("[RELAY] Failed to relay message to \(peerID)", level: .warning, category: .network)
+                        log("[RELAY] Failed to relay message to \(peerID.prefix(8))...", level: .warning, category: .network)
                     }
                 }
                 relayedCount += 1
             } else {
                 // Cannot reach peer - not directly connected and no relay path
-                log("[E2E] Cannot reach peer \(peerID) - not connected and no relay path", level: .warning, category: .network)
+                log("[E2E] Cannot reach peer \(peerID.prefix(8))... - not connected and no relay path", level: .warning, category: .network)
                 failedPeers.append(peerID)
+            }
+        }
+
+        // SECURITY: Queue messages for peers that don't have keys yet. Never send unencrypted.
+        if !peersWithoutKey.isEmpty {
+            if pendingEncryptionQueue.count < Self.maxPendingMessages {
+                pendingEncryptionQueue.append(PendingEncryptedMessage(
+                    plainData: plainData,
+                    messageType: messageType,
+                    isPrivateChat: isPrivateChat,
+                    targetPeerIDs: peersWithoutKey
+                ))
+                pendingEncryptionCount = pendingEncryptionQueue.count
+                log("[E2E] Queued message for \(peersWithoutKey.count) peer(s) pending key exchange (\(pendingEncryptionQueue.count) queued)",
+                    category: .security)
+            } else {
+                log("[E2E] Pending encryption queue full (\(Self.maxPendingMessages)), dropping message for \(peersWithoutKey.count) peer(s)",
+                    level: .warning, category: .security)
             }
         }
 
@@ -1824,7 +1887,32 @@ public final class PoolChatViewModel: ObservableObject, PoolChatAppLifecycle {
             log("[E2E] Sent encrypted \(messageType.rawValue): \(directSentCount) direct, \(relayedCount) relayed", category: .security)
         }
         if !failedPeers.isEmpty {
-            log("[E2E] Failed to send encrypted message to \(failedPeers.count) peer(s): \(failedPeers.joined(separator: ", "))", level: .warning, category: .security)
+            log("[E2E] Failed to send encrypted message to \(failedPeers.count) peer(s)", level: .warning, category: .security)
+        }
+    }
+
+    /// Flush pending encryption queue for a specific peer after key exchange completes.
+    /// Called when a new encryption key is established with a peer.
+    private func flushPendingEncryptionQueue(for peerID: String) {
+        let pendingForPeer = pendingEncryptionQueue.filter { $0.targetPeerIDs.contains(peerID) }
+        guard !pendingForPeer.isEmpty else { return }
+
+        log("[E2E] Flushing \(pendingForPeer.count) queued message(s) for peer \(peerID.prefix(8))...", category: .security)
+
+        // Remove from queue before sending to avoid re-entrancy issues
+        pendingEncryptionQueue.removeAll { msg in
+            msg.targetPeerIDs.contains(peerID)
+        }
+        pendingEncryptionCount = pendingEncryptionQueue.count
+
+        for pending in pendingForPeer {
+            // Only send to the peer whose key just became available (others may still be pending)
+            sendEncryptedPayload(
+                pending.plainData,
+                messageType: pending.messageType,
+                isPrivateChat: pending.isPrivateChat,
+                targetPeerIDs: [peerID]
+            )
         }
     }
 
@@ -1836,7 +1924,7 @@ public final class PoolChatViewModel: ObservableObject, PoolChatAppLifecycle {
             if let envelope = RelayEnvelope.decode(from: poolMessage.payload) {
                 relayService?.handleRelayEnvelope(envelope, from: poolMessage.senderID)
             } else {
-                log("[RELAY] Failed to decode relay envelope from \(poolMessage.senderID)", level: .warning, category: .network)
+                log("[RELAY] Failed to decode relay envelope from \(poolMessage.senderID.prefix(8))...", level: .warning, category: .network)
             }
             return  // Relay messages are handled by relay service
         }
@@ -1844,6 +1932,10 @@ public final class PoolChatViewModel: ObservableObject, PoolChatAppLifecycle {
         // Handle key exchange messages for E2E encryption
         if poolMessage.type == .keyExchange,
            let payload = poolMessage.decodePayload(as: ConnectionPool.KeyExchangePayload.self) {
+            // Skip key exchange messages from ourselves (relay echo)
+            if let pm = poolManager, payload.senderPeerID == pm.localPeerID {
+                return
+            }
             handleKeyExchange(payload)
             return
         }
@@ -1856,9 +1948,9 @@ public final class PoolChatViewModel: ObservableObject, PoolChatAppLifecycle {
             if poolMessage.type == .chat,
                let payload = poolMessage.decodePayload(as: ChatPayload.self) {
                 if PoolChatConfiguration.rejectUnencryptedMessages {
-                    log("[SECURITY] Rejected unencrypted .chat message from: \(poolMessage.senderID) (rejectUnencryptedMessages=true)", level: .warning, category: .security)
+                    log("[SECURITY] Rejected unencrypted .chat message from: \(poolMessage.senderID.prefix(8))... (rejectUnencryptedMessages=true)", level: .warning, category: .security)
                 } else {
-                    log("[SECURITY] Accepted legacy unencrypted .chat message from: \(poolMessage.senderID) - consider upgrading client", level: .warning, category: .security)
+                    log("[SECURITY] Accepted legacy unencrypted .chat message from: \(poolMessage.senderID.prefix(8))... - consider upgrading client", level: .warning, category: .security)
                     var message = RichChatMessage.textMessage(
                         from: poolMessage.senderID,
                         senderName: poolMessage.senderName,
@@ -1897,17 +1989,17 @@ public final class PoolChatViewModel: ObservableObject, PoolChatAppLifecycle {
 
         // Verify we have a key for this peer
         guard encryptionService.hasKeyFor(peerID: senderPeerID) else {
-            log("[E2E] Cannot decrypt - no key for peer: \(senderPeerID)", level: .warning, category: .security)
+            log("[E2E] Cannot decrypt - no key for peer: \(senderPeerID.prefix(8))...", level: .warning, category: .security)
             return
         }
 
         // Decrypt the payload
         guard let decryptedData = encryptionService.decrypt(encryptedPayload.encryptedData, from: senderPeerID) else {
-            log("[E2E] Decryption failed for message from: \(senderPeerID)", level: .error, category: .security)
+            log("[E2E] Decryption failed for message from: \(senderPeerID.prefix(8))...", level: .error, category: .security)
             return
         }
 
-        log("[E2E] Successfully decrypted \(encryptedPayload.messageType.rawValue) from: \(senderPeerID)", category: .security)
+        log("[E2E] Successfully decrypted \(encryptedPayload.messageType.rawValue) from: \(senderPeerID.prefix(8))...", category: .security)
 
         // Route to appropriate handler based on message type
         switch encryptedPayload.messageType {
@@ -1915,10 +2007,10 @@ public final class PoolChatViewModel: ObservableObject, PoolChatAppLifecycle {
             handleDecryptedChatMessage(decryptedData, from: poolMessage)
 
         case .reaction:
-            handleDecryptedReaction(decryptedData)
+            handleDecryptedReaction(decryptedData, from: senderPeerID)
 
         case .pollVote:
-            handleDecryptedPollVote(decryptedData)
+            handleDecryptedPollVote(decryptedData, from: senderPeerID)
 
         case .historySync:
             handleDecryptedHistorySync(decryptedData)
@@ -1957,28 +2049,34 @@ public final class PoolChatViewModel: ObservableObject, PoolChatAppLifecycle {
     }
 
     /// Handle decrypted reaction update
-    private func handleDecryptedReaction(_ data: Data) {
+    /// - Parameters:
+    ///   - data: The decrypted reaction payload data.
+    ///   - authenticatedSenderID: The transport-authenticated sender identity (not self-reported).
+    private func handleDecryptedReaction(_ data: Data, from authenticatedSenderID: String) {
         guard let reactionPayload = try? JSONDecoder().decode(ReactionUpdatePayload.self, from: data) else {
             log("[E2E] Failed to decode decrypted reaction", level: .error, category: .security)
             return
         }
 
-        // Don't process our own reactions
-        if reactionPayload.peerID != poolManager?.localPeerID {
-            handleReactionUpdate(reactionPayload)
+        // Don't process our own reactions (use transport-authenticated identity)
+        if authenticatedSenderID != poolManager?.localPeerID {
+            handleReactionUpdate(reactionPayload, authenticatedSenderID: authenticatedSenderID)
         }
     }
 
     /// Handle decrypted poll vote
-    private func handleDecryptedPollVote(_ data: Data) {
+    /// - Parameters:
+    ///   - data: The decrypted poll vote payload data.
+    ///   - authenticatedSenderID: The transport-authenticated sender identity (not self-reported).
+    private func handleDecryptedPollVote(_ data: Data, from authenticatedSenderID: String) {
         guard let pollVotePayload = try? JSONDecoder().decode(PollVotePayload.self, from: data) else {
             log("[E2E] Failed to decode decrypted poll vote", level: .error, category: .security)
             return
         }
 
-        // Don't process our own votes
-        if pollVotePayload.voterID != poolManager?.localPeerID {
-            handlePollVoteUpdate(pollVotePayload)
+        // Don't process our own votes (use transport-authenticated identity)
+        if authenticatedSenderID != poolManager?.localPeerID {
+            handlePollVoteUpdate(pollVotePayload, authenticatedSenderID: authenticatedSenderID)
         }
     }
 
@@ -2000,7 +2098,7 @@ public final class PoolChatViewModel: ObservableObject, PoolChatAppLifecycle {
             return
         }
 
-        log("[E2E] Decrypted clear history command from: \(senderID)", category: .security)
+        log("[E2E] Decrypted clear history command from: \(senderID.prefix(8))...", category: .security)
         handleClearHistoryCommand(payload, from: senderID)
     }
 
@@ -2009,7 +2107,7 @@ public final class PoolChatViewModel: ObservableObject, PoolChatAppLifecycle {
     /// Handles an envelope that was relayed to us through the mesh network (we are the destination)
     /// The envelope contains encrypted payload that needs to be decrypted using our key with the origin peer
     private func handleRelayedEnvelope(_ envelope: RelayEnvelope) {
-        log("[RELAY] Received relayed envelope from origin: \(envelope.originPeerID), hops: \(envelope.hopPath.count)", category: .network)
+        log("[RELAY] Received relayed envelope from origin: \(envelope.originPeerID.prefix(8))..., hops: \(envelope.hopPath.count)", category: .network)
 
         // The encrypted payload in the envelope should be an EncryptedChatPayload
         // We need to decrypt it using our shared key with the origin peer
@@ -2020,22 +2118,22 @@ public final class PoolChatViewModel: ObservableObject, PoolChatAppLifecycle {
 
         // Verify the sender matches the envelope origin
         guard encryptedPayload.senderPeerID == envelope.originPeerID else {
-            log("[RELAY] Sender mismatch: envelope origin \(envelope.originPeerID) vs payload sender \(encryptedPayload.senderPeerID)", level: .warning, category: .security)
+            log("[RELAY] Sender mismatch: envelope origin \(envelope.originPeerID.prefix(8))... vs payload sender \(encryptedPayload.senderPeerID.prefix(8))...", level: .warning, category: .security)
             return
         }
 
         // Decrypt the payload
         guard encryptionService.hasKeyFor(peerID: envelope.originPeerID) else {
-            log("[RELAY] Cannot decrypt relayed message - no key for peer: \(envelope.originPeerID)", level: .warning, category: .security)
+            log("[RELAY] Cannot decrypt relayed message - no key for peer: \(envelope.originPeerID.prefix(8))...", level: .warning, category: .security)
             return
         }
 
         guard let decryptedData = encryptionService.decrypt(encryptedPayload.encryptedData, from: envelope.originPeerID) else {
-            log("[RELAY] Failed to decrypt relayed message from \(envelope.originPeerID)", level: .warning, category: .security)
+            log("[RELAY] Failed to decrypt relayed message from \(envelope.originPeerID.prefix(8))...", level: .warning, category: .security)
             return
         }
 
-        log("[RELAY] Successfully decrypted relayed \(encryptedPayload.messageType.rawValue) from: \(envelope.originPeerID)", category: .security)
+        log("[RELAY] Successfully decrypted relayed \(encryptedPayload.messageType.rawValue) from: \(envelope.originPeerID.prefix(8))...", category: .security)
 
         // Route to appropriate handler based on message type
         handleDecryptedPayload(decryptedData, messageType: encryptedPayload.messageType, senderPeerID: envelope.originPeerID, isPrivateChat: encryptedPayload.isPrivateChat)
@@ -2065,10 +2163,10 @@ public final class PoolChatViewModel: ObservableObject, PoolChatAppLifecycle {
             }
 
         case .reaction:
-            handleDecryptedReaction(data)
+            handleDecryptedReaction(data, from: senderPeerID)
 
         case .pollVote:
-            handleDecryptedPollVote(data)
+            handleDecryptedPollVote(data, from: senderPeerID)
 
         case .historySync:
             handleDecryptedHistorySync(data)
@@ -2085,7 +2183,7 @@ public final class PoolChatViewModel: ObservableObject, PoolChatAppLifecycle {
     private func handleUnencryptedLegacyPayload(_ poolMessage: PoolMessage) {
         // SECURITY FIX (V8): If configured to reject unencrypted messages, drop all legacy payloads
         if PoolChatConfiguration.rejectUnencryptedMessages {
-            log("[SECURITY] Rejected unencrypted custom message from: \(poolMessage.senderID) (rejectUnencryptedMessages=true)", level: .warning, category: .security)
+            log("[SECURITY] Rejected unencrypted custom message from: \(poolMessage.senderID.prefix(8))... (rejectUnencryptedMessages=true)", level: .warning, category: .security)
             return
         }
 
@@ -2157,9 +2255,9 @@ public final class PoolChatViewModel: ObservableObject, PoolChatAppLifecycle {
     private func handleReceivedMessage(_ message: RichChatMessage, isPrivate: Bool, senderID: String, wasEncrypted: Bool = false) {
         // Log encryption status
         if wasEncrypted {
-            log("[E2E] Processing decrypted message from: \(senderID)", category: .security)
+            log("[E2E] Processing decrypted message from: \(senderID.prefix(8))...", category: .security)
         } else {
-            log("[E2E] WARNING: Processing unencrypted message from: \(senderID)", level: .warning, category: .security)
+            log("[E2E] WARNING: Processing unencrypted message from: \(senderID.prefix(8))...", level: .warning, category: .security)
         }
 
         // Check for duplicate using O(1) set lookup
@@ -2355,7 +2453,7 @@ public final class PoolChatViewModel: ObservableObject, PoolChatAppLifecycle {
     /// The key exchange happens in performKeyExchange() when peer connects.
     /// We add a small delay to allow key exchange to complete before sending history.
     private func sendChatHistoryToPeer(_ peer: Peer) {
-        guard let poolManager = poolManager else { return }
+        guard poolManager != nil else { return }
 
         // If no session ID yet but we have messages, still try to sync from memory
         let sessionID = currentSessionID
@@ -2549,7 +2647,10 @@ public final class PoolChatViewModel: ObservableObject, PoolChatAppLifecycle {
         )
 
         if success {
-            log("Encryption established with peer: \(payload.senderPeerID)", category: .security)
+            log("Encryption established with peer: \(payload.senderPeerID.prefix(8))...", category: .security)
+
+            // Flush any queued messages that were waiting for this peer's encryption key
+            flushPendingEncryptionQueue(for: payload.senderPeerID)
 
             // RECIPROCAL KEY EXCHANGE: If we didn't have a key for this peer before,
             // send our public key back to them. This ensures both peers have keys
@@ -2607,7 +2708,7 @@ public final class PoolChatViewModel: ObservableObject, PoolChatAppLifecycle {
                             requestHistorySyncFromHost()
                             historyRequestedForSession = sessionID
                         } else {
-                            log("[E2E] Key exchange with non-host peer \(payload.senderPeerID), waiting for host key exchange", category: .security)
+                            log("[E2E] Key exchange with non-host peer \(payload.senderPeerID.prefix(8))..., waiting for host key exchange", category: .security)
                         }
                     } else {
                         log("[E2E] Key exchange complete, but already have \(groupMessages.count) messages - skipping history request", category: .security)
@@ -2615,7 +2716,7 @@ public final class PoolChatViewModel: ObservableObject, PoolChatAppLifecycle {
                 }
             }
         } else {
-            log("[E2E] Key exchange failed with peer: \(payload.senderPeerID), will retry on next message", level: .warning, category: .security)
+            log("[E2E] Key exchange failed with peer: \(payload.senderPeerID.prefix(8))..., will retry on next message", level: .warning, category: .security)
             // Retry key exchange after a delay
             Task {
                 try? await Task.sleep(for: .milliseconds(1000))
@@ -2624,6 +2725,24 @@ public final class PoolChatViewModel: ObservableObject, PoolChatAppLifecycle {
                 }
             }
         }
+    }
+
+    // MARK: - Pool Shared Secret Derivation
+
+    /// Derives a pool-level shared secret for relay envelope HMAC integrity.
+    ///
+    /// The secret is derived from the local peer's encryption public key and the pool ID.
+    /// This is NOT the pool UUID alone (which is public), but includes cryptographic material
+    /// from the E2E key exchange that observers cannot access on the wire.
+    ///
+    /// All pool members derive the same HMAC keys because RelayEnvelope.deriveHMACKey uses
+    /// this as input keying material combined with the pool ID as salt.
+    private static func derivePoolSharedSecret(localPublicKey: Data, poolID: UUID) -> SymmetricKey {
+        let poolIDData = withUnsafeBytes(of: poolID.uuid) { Data($0) }
+        var ikm = Data("StealthOS-PoolSharedSecret-v1".utf8)
+        ikm.append(localPublicKey)
+        ikm.append(poolIDData)
+        return SymmetricKey(data: ikm)
     }
 
     // MARK: - Helpers
@@ -2708,14 +2827,10 @@ public final class PoolChatViewModel: ObservableObject, PoolChatAppLifecycle {
             let sessionID = session.id.uuidString
             currentSessionID = sessionID
 
-            // Create stable conversation ID for persistent history across pool reconnections
-            let stableID = ChatConversation.stableGroupConversationID(poolName: session.name, hostPeerID: session.hostPeerID)
-            stableGroupConvID = stableID
-
             // Set the host-based conversation ID (simpler, more stable)
             let hostBasedID = ChatConversation.hostBasedGroupConversationID(hostPeerID: session.hostPeerID)
             hostBasedGroupConvID = hostBasedID
-            log("[APPEAR] Set currentSessionID: \(sessionID), hostBasedGroupConvID: \(hostBasedID)", category: .network)
+            log("[APPEAR] Set currentSessionID: \(sessionID), hostBasedGroupConvID set", category: .network)
 
             if #available(macOS 14.0, iOS 17.0, *) {
                 chatHistoryService.markSessionActive(sessionID)
@@ -2751,7 +2866,7 @@ public final class PoolChatViewModel: ObservableObject, PoolChatAppLifecycle {
         selectedChatTab = 0
 
         // Reload group messages to ensure history is displayed
-        let hasConvID = hostBasedGroupConvID != nil || stableGroupConvID != nil
+        let hasConvID = hostBasedGroupConvID != nil
         if groupMessages.isEmpty && hasConvID {
             if #available(macOS 14.0, iOS 17.0, *) {
                 Task {
@@ -2770,15 +2885,11 @@ public final class PoolChatViewModel: ObservableObject, PoolChatAppLifecycle {
         // Use host-based conversation ID for persistent history
         var groupConvID: String
 
-        if let hostBasedID = hostBasedGroupConvID {
-            groupConvID = hostBasedID
-        } else if let stableID = stableGroupConvID {
-            // Fallback to stable ID for backwards compatibility
-            groupConvID = stableID
-        } else {
+        guard let hostBasedID = hostBasedGroupConvID else {
             log("[HISTORY] loadGroupChatHistory: no group conversation ID available, cannot load", level: .warning, category: .network)
             return
         }
+        groupConvID = hostBasedID
 
         log("[HISTORY] Loading group chat for conversationID: \(groupConvID)", category: .network)
         let loadedGroupMessages = await chatHistoryService.getMessages(for: groupConvID)
@@ -2872,17 +2983,12 @@ public final class PoolChatViewModel: ObservableObject, PoolChatAppLifecycle {
         // Use host-based conversation ID for persistent history
         var groupConvID: String
 
-        if let hostBasedID = hostBasedGroupConvID {
-            groupConvID = hostBasedID
-            log("Loading chat history for hostBasedID: \(hostBasedID)", category: .network)
-        } else if let stableID = stableGroupConvID {
-            // Fallback to stable ID for backwards compatibility
-            groupConvID = stableID
-            log("Loading chat history for legacy stableID: \(stableID)", category: .network)
-        } else {
+        guard let hostBasedID = hostBasedGroupConvID else {
             log("[HISTORY] loadChatHistory: no group conversation ID available, cannot load", level: .warning, category: .network)
             return
         }
+        groupConvID = hostBasedID
+        log("Loading chat history for group conversation", category: .network)
 
         // Load group chat history from persistence
         let loadedGroupMessages = await chatHistoryService.getMessages(for: groupConvID)
@@ -2961,15 +3067,7 @@ public final class PoolChatViewModel: ObservableObject, PoolChatAppLifecycle {
         if isGroupChat {
             // Use host-based conversation ID for persistent history
             guard let hostBasedID = hostBasedGroupConvID else {
-                // Fallback to stable ID for backwards compatibility
-                guard let stableID = stableGroupConvID else {
-                    log("[HISTORY] saveMessageToHistory: no group conversation ID available, cannot save", level: .warning, category: .network)
-                    return
-                }
-                conversationID = stableID
-                log("[HISTORY] Saving group message to legacy stableID: \(conversationID)", category: .network)
-
-                await chatHistoryService.addMessage(message, to: conversationID, isGroupChat: isGroupChat, participantIDs: participantIDs)
+                log("[HISTORY] saveMessageToHistory: no group conversation ID available, cannot save", level: .warning, category: .network)
                 return
             }
             conversationID = hostBasedID
@@ -2990,8 +3088,7 @@ public final class PoolChatViewModel: ObservableObject, PoolChatAppLifecycle {
 
     /// Mark group chat as read
     private func markGroupChatAsRead() {
-        let convID = hostBasedGroupConvID ?? stableGroupConvID
-        guard let conversationID = convID else { return }
+        guard let conversationID = hostBasedGroupConvID else { return }
 
         groupUnreadCount = 0
 
@@ -3114,7 +3211,7 @@ public final class PoolChatViewModel: ObservableObject, PoolChatAppLifecycle {
             messages = privateMessages[peerID] ?? []
         }
 
-        log("Cleared private chat history for peer \(peerID)", category: .network)
+        log("Cleared private chat history for peer \(peerID.prefix(8))...", category: .network)
     }
 
     /// Host clears history for everyone
@@ -3123,8 +3220,7 @@ public final class PoolChatViewModel: ObservableObject, PoolChatAppLifecycle {
               poolManager.isHost,
               let sessionID = currentSessionID else { return }
 
-        let convID = hostBasedGroupConvID ?? stableGroupConvID
-        guard convID != nil else { return }
+        guard hostBasedGroupConvID != nil else { return }
 
         // Clear local messages and deduplication tracking for group
         groupMessages = []
@@ -3148,9 +3244,6 @@ public final class PoolChatViewModel: ObservableObject, PoolChatAppLifecycle {
                         groupChatInfos[index].unreadCount = 0
                         await chatHistoryService.saveGroupChatInfos(groupChatInfos)
                     }
-                } else if let stableID = stableGroupConvID {
-                    // Fallback to stable ID
-                    await chatHistoryService.clearGroupHistoryByStableID(stableID, force: true)
                 }
             }
         }
@@ -3217,13 +3310,13 @@ public final class PoolChatViewModel: ObservableObject, PoolChatAppLifecycle {
             || (poolManager.isHost && senderID == poolManager.localPeerID)
 
         guard senderIsHost else {
-            log("[SECURITY] Clear history rejected - sender \(senderID) is not the pool host", level: .warning, category: .security)
+            log("[SECURITY] Clear history rejected - sender \(senderID.prefix(8))... is not the pool host", level: .warning, category: .security)
             return
         }
 
         // Security: Verify the sender matches the clearedBy field in payload
         guard payload.clearedBy == senderID else {
-            log("[SECURITY] Clear history sender mismatch - claimed: \(payload.clearedBy), actual: \(senderID)", level: .warning, category: .security)
+            log("[SECURITY] Clear history sender mismatch - claimed: \(payload.clearedBy.prefix(8))..., actual: \(senderID.prefix(8))...", level: .warning, category: .security)
             return
         }
 
@@ -3249,9 +3342,6 @@ public final class PoolChatViewModel: ObservableObject, PoolChatAppLifecycle {
                         groupChatInfos[index].unreadCount = 0
                         await chatHistoryService.saveGroupChatInfos(groupChatInfos)
                     }
-                } else if let stableID = stableGroupConvID {
-                    // Fallback to stable ID
-                    await chatHistoryService.clearGroupHistoryByStableID(stableID, force: true)
                 }
             }
         }
@@ -3397,7 +3487,7 @@ public final class PoolChatViewModel: ObservableObject, PoolChatAppLifecycle {
         await chatHistoryService.saveGroupChatInfos(groups)
         groupChatInfos = groups
 
-        log("[GROUP_LIST] Registered/updated group for host: \(hostPeerID)", category: .network)
+        log("[GROUP_LIST] Registered/updated group for host: \(hostPeerID.prefix(8))...", category: .network)
     }
 
     /// Update group chat info when a message is received
@@ -3450,7 +3540,7 @@ public final class PoolChatViewModel: ObservableObject, PoolChatAppLifecycle {
                     groupChatInfos[index].unreadCount = 0
                 }
 
-                log("[GROUP_LIST] Opened group chat with host: \(hostPeerID), messages: \(loadedMessages.count)", category: .network)
+                log("[GROUP_LIST] Opened group chat with host: \(hostPeerID.prefix(8))..., messages: \(loadedMessages.count)", category: .network)
             }
         }
     }
