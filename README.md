@@ -47,37 +47,26 @@ Because chat should not require trusting a third party. Every mainstream messeng
 
 ## Architecture
 
-```
-┌─────────────────────────────────────────────────┐
-│                   Your App                       │
-├─────────────────────────────────────────────────┤
-│                                                  │
-│  ┌────────────────────────────────────────────┐  │
-│  │              PoolChatView                  │  │
-│  │         (SwiftUI, cross-platform)          │  │
-│  └──────────────────┬─────────────────────────┘  │
-│                     │                            │
-│  ┌──────────────────▼─────────────────────────┐  │
-│  │           PoolChatViewModel                │  │
-│  │   Messages, UI state, chat mode, polls,    │  │
-│  │   reactions, mentions, image/voice send     │  │
-│  └──────────────────┬─────────────────────────┘  │
-│                     │                            │
-│  ┌──────────┬───────┴───────┬──────────────────┐ │
-│  │ ChatHist │  ChatEncrypt  │ VoiceRecording   │ │
-│  │ oryServ. │  ionService   │ Service          │ │
-│  │          │               │                  │ │
-│  │ Encrypted│ Curve25519    │ AVFoundation     │ │
-│  │ persist. │ + AES-256-GCM │ record/playback  │ │
-│  └────┬─────┴───────┬───────┴──────────────────┘ │
-│       │             │                            │
-│  ┌────▼─────┐  ┌────▼──────────────────────────┐ │
-│  │ Secure   │  │      ConnectionPool           │ │
-│  │ Storage  │  │  (mesh network transport)      │ │
-│  │ Provider │  │                                │ │
-│  └──────────┘  └────────────────────────────────┘ │
-│                                                  │
-└─────────────────────────────────────────────────┘
+```mermaid
+graph TD
+    subgraph YourApp["Your App"]
+        PoolChatView["PoolChatView\nSwiftUI, cross-platform"]
+        PoolChatVM["PoolChatViewModel\nMessages, UI state, chat mode\npolls, reactions, mentions\nimage/voice send"]
+
+        PoolChatView --> PoolChatVM
+
+        PoolChatVM --> ChatHistory
+        PoolChatVM --> ChatEncryption
+        PoolChatVM --> VoiceRecording
+
+        ChatHistory["ChatHistoryService\nEncrypted persistence"]
+        ChatEncryption["ChatEncryptionService\nCurve25519 + AES-256-GCM"]
+        VoiceRecording["VoiceRecordingService\nAVFoundation record/playback"]
+
+        ChatHistory --> SecureStorage["SecureStorageProvider"]
+        ChatEncryption --> ConnectionPool["ConnectionPool\nMesh network transport"]
+        VoiceRecording --> ConnectionPool
+    end
 ```
 
 **Message flow (send):**
