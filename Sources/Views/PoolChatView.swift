@@ -1287,6 +1287,12 @@ struct MessagesListView: View {
     let onToggleReaction: (String, UUID) -> Void
     let onPollVote: (UUID, String) -> Void
 
+    /// Whether auto-scroll is active. Disabled when user scrolls up manually.
+    @State private var isAutoScrollEnabled = true
+
+    /// Viewport height for scroll position calculation.
+    @State private var viewportHeight: CGFloat = 0
+
     var body: some View {
         Group {
             if messages.isEmpty {
@@ -1312,21 +1318,85 @@ struct MessagesListView: View {
                                 )
                                 .id(message.id)
                             }
+
+                            // Invisible anchor at the very bottom for reliable scrolling
+                            Color.clear
+                                .frame(height: 1)
+                                .id("bottom_anchor")
                         }
                         .padding(.horizontal, 10)
                         .padding(.vertical, 8)
+                        .background(
+                            GeometryReader { geo in
+                                Color.clear.preference(
+                                    key: ScrollOffsetKey.self,
+                                    value: geo.frame(in: .named("chatScroll")).maxY
+                                )
+                            }
+                        )
+                    }
+                    .coordinateSpace(name: "chatScroll")
+                    .background(
+                        GeometryReader { viewport in
+                            Color.clear.preference(
+                                key: ViewportHeightKey.self,
+                                value: viewport.size.height
+                            )
+                        }
+                    )
+                    .onPreferenceChange(ViewportHeightKey.self) { height in
+                        viewportHeight = height
+                    }
+                    .onPreferenceChange(ScrollOffsetKey.self) { maxY in
+                        // If the bottom of the content is near the viewport bottom,
+                        // the user is at the bottom — re-enable auto-scroll.
+                        // If they scrolled up significantly, disable it.
+                        let threshold: CGFloat = 80
+                        let isNearBottom = maxY < viewportHeight + threshold
+                        if isNearBottom && !isAutoScrollEnabled {
+                            isAutoScrollEnabled = true
+                        } else if !isNearBottom && isAutoScrollEnabled {
+                            isAutoScrollEnabled = false
+                        }
                     }
                     .scrollDismissesKeyboard(.interactively)
+                    .onAppear {
+                        scrollToBottom(proxy: proxy, animated: false)
+                    }
                     .onChange(of: messages.count) { _, _ in
-                        if let lastMessage = messages.last {
-                            withAnimation(.easeOut(duration: 0.2)) {
-                                proxy.scrollTo(lastMessage.id, anchor: .bottom)
-                            }
+                        if isAutoScrollEnabled {
+                            scrollToBottom(proxy: proxy, animated: true)
                         }
                     }
                 }
             }
         }
+    }
+
+    private func scrollToBottom(proxy: ScrollViewProxy, animated: Bool) {
+        if animated {
+            withAnimation(.easeOut(duration: 0.2)) {
+                proxy.scrollTo("bottom_anchor", anchor: .bottom)
+            }
+        } else {
+            proxy.scrollTo("bottom_anchor", anchor: .bottom)
+        }
+    }
+}
+
+/// Preference key to track the scroll content's bottom edge position.
+private struct ScrollOffsetKey: PreferenceKey {
+    nonisolated(unsafe) static var defaultValue: CGFloat = 0
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+        value = nextValue()
+    }
+}
+
+/// Preference key to track the viewport height.
+private struct ViewportHeightKey: PreferenceKey {
+    nonisolated(unsafe) static var defaultValue: CGFloat = 0
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+        value = nextValue()
     }
 }
 

@@ -1769,9 +1769,17 @@ public final class PoolChatViewModel: ObservableObject, PoolChatAppLifecycle {
             )
         } else {
             // For group chat: encrypt for each peer separately
-            let peerIDs = poolManager.connectedPeers.map { $0.id }
+            // Exclude self — we already added our own message locally via addLocalMessage(),
+            // and we never have an encryption key for ourselves (no self key exchange).
+            // Including self causes every group message to queue a PendingEncryptedMessage
+            // for our own ID. After 50 messages the queue fills and legitimate messages
+            // for newly joined peers (whose keys are still being negotiated) get dropped.
+            let localID = poolManager.localPeerID
+            let peerIDs = poolManager.connectedPeers
+                .map { $0.id }
+                .filter { $0 != localID }
             if peerIDs.isEmpty {
-                log("[E2E] No connected peers to send encrypted message to", category: .security)
+                log("[E2E] No remote peers to send encrypted message to", category: .security)
                 return
             }
             sendEncryptedPayload(
@@ -1800,12 +1808,18 @@ public final class PoolChatViewModel: ObservableObject, PoolChatAppLifecycle {
     ) {
         guard let poolManager = poolManager else { return }
 
+        // Safety net: strip self from target list. We never hold an encryption key for
+        // our own peer ID, so including self would always queue an unreachable pending
+        // message that can never be flushed, gradually filling the pending queue.
+        let localID = poolManager.localPeerID
+        let filteredTargetPeerIDs = targetPeerIDs.filter { $0 != localID }
+
         var directSentCount = 0
         var relayedCount = 0
         var peersWithoutKey: [String] = []
         var failedPeers: [String] = []
 
-        for peerID in targetPeerIDs {
+        for peerID in filteredTargetPeerIDs {
             // Check if we have a key established with this peer
             guard encryptionService.hasKeyFor(peerID: peerID) else {
                 log("[E2E] No encryption key for peer: \(peerID.prefix(8))... - queuing message for delivery after key exchange", level: .warning, category: .security)
