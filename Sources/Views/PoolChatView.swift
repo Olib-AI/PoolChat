@@ -68,6 +68,18 @@ private extension View {
         self
         #endif
     }
+
+    @ViewBuilder
+    func crossPlatformCallPresentation<Content: View>(
+        isPresented: Binding<Bool>,
+        @ViewBuilder content: @escaping () -> Content
+    ) -> some View {
+        #if os(iOS)
+        self.fullScreenCover(isPresented: isPresented, content: content)
+        #else
+        self.sheet(isPresented: isPresented, content: content)
+        #endif
+    }
 }
 
 // MARK: - Debug Traced Animation Modifier
@@ -229,7 +241,7 @@ public struct PoolChatView: View {
             }
         }
         // Incoming call full-screen cover
-        .fullScreenCover(isPresented: $viewModel.showIncomingCallView) {
+        .crossPlatformCallPresentation(isPresented: $viewModel.showIncomingCallView) {
             if let signal = viewModel.callManager.incomingCallSignal {
                 IncomingCallView(
                     signal: signal,
@@ -246,7 +258,7 @@ public struct PoolChatView: View {
             }
         }
         // Active call full-screen cover
-        .fullScreenCover(isPresented: $viewModel.showActiveCallView) {
+        .crossPlatformCallPresentation(isPresented: $viewModel.showActiveCallView) {
             if let session = viewModel.callManager.currentCall {
                 ActiveCallView(
                     callManager: viewModel.callManager,
