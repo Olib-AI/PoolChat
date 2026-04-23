@@ -8,7 +8,7 @@ Used in [StealthOS](https://www.stealthos.app) - The privacy-focused operating e
 
 ---
 
-PoolChat is a Swift package that provides fully encrypted, serverless group and private messaging over a local mesh network. It sits on top of [ConnectionPool](https://github.com/Olib-AI/ConnectionPool) and adds Curve25519 key agreement, AES-256-GCM message encryption, Trust-On-First-Use identity verification, rich message types, encrypted history persistence, and ready-made SwiftUI views. No internet connection, no servers, no accounts -- just devices talking directly to each other with end-to-end encryption.
+PoolChat is a Swift package that provides fully encrypted, serverless group and private messaging, plus voice and video calling, over ConnectionPool networks. It sits on top of [ConnectionPool](https://github.com/Olib-AI/ConnectionPool) and adds Curve25519 key agreement, AES-256-GCM message encryption, Trust-On-First-Use identity verification, rich message types, encrypted history persistence, calling UI, and ready-made SwiftUI views. It works with both local mesh pools and remote ConnectionPool topologies. No internet connection, no chat servers, no accounts -- just devices communicating with end-to-end encryption.
 
 ## Why PoolChat Exists
 
@@ -28,6 +28,7 @@ Because chat should not require trusting a third party. Every mainstream messeng
 
 ### Messaging
 - **Rich message types** -- Text, images, voice notes, emoji, polls, and system messages
+- **Voice and video calling** -- Encrypted 1:1 and group calling over local and remote ConnectionPool connectivity
 - **Message reactions** -- Quick-react with emoji on any message, synced across all peers
 - **Polls** -- Create polls with multiple options, optional vote-change policy, live vote counts
 - **Replies** -- Reply to specific messages with preview context
@@ -36,7 +37,8 @@ Because chat should not require trusting a third party. Every mainstream messeng
 - **Message status tracking** -- Sending, sent, delivered, read, and failed states
 
 ### Infrastructure
-- **Works over ConnectionPool** -- Peer discovery, connection management, and message routing handled by the mesh layer
+- **Works over ConnectionPool** -- Peer discovery, connection management, chat routing, and call signaling handled by the transport layer
+- **Local and remote pool support** -- Operates across nearby mesh peers and remote ConnectionPool-backed sessions
 - **Chat history sync** -- Host sends encrypted history to newly joined peers (configurable)
 - **Local notifications** -- Background message notifications with deep link support, reply actions, and thread grouping
 - **Notification bridge** -- Notifications work even when the chat window is closed
@@ -171,7 +173,7 @@ Add to your `Package.swift`:
 
 ```swift
 dependencies: [
-    .package(url: "https://github.com/Olib-AI/PoolChat.git", from: "1.4.0")
+    .package(url: "https://github.com/Olib-AI/PoolChat.git", from: "1.5.0")
 ]
 ```
 
@@ -294,7 +296,7 @@ struct ChatScreen: View {
 }
 ```
 
-The view includes message bubbles, emoji picker, voice recording controls, image sending, poll creation, reactions, reply threading, and @mention autocomplete -- all with cross-platform support.
+The view includes message bubbles, emoji picker, voice recording controls, image sending, poll creation, reactions, reply threading, @mention autocomplete, and voice/video calling flows -- all with cross-platform support.
 
 ## Configuration
 
