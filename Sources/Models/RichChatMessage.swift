@@ -635,6 +635,10 @@ public enum EncryptedMessageType: String, Codable, Sendable {
     case pollVote = "poll_vote"
     case historySync = "history_sync"
     case clearHistory = "clear_history"
+    /// Call signaling messages (offer, answer, reject, end, media control).
+    case callSignal = "call_signal"
+    /// Real-time media frames (audio/video) for active calls.
+    case mediaFrame = "media_frame"
 }
 
 // MARK: - Chat Mode

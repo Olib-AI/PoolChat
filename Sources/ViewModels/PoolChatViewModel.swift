@@ -140,6 +140,16 @@ public final class PoolChatViewModel: ObservableObject, PoolChatAppLifecycle {
     /// Whether the Pool Chat window is currently visible (open and not minimized)
     @Published public var isWindowVisible: Bool = false
 
+    // MARK: - Calling
+
+    /// Call manager for voice and video calling.
+    public let callManager = CallManager()
+
+    /// Whether the incoming call view should be presented.
+    @Published public var showIncomingCallView: Bool = false
+    /// Whether the active call view should be presented.
+    @Published public var showActiveCallView: Bool = false
+
     // MARK: - Services
 
     private let encryptionService = ChatEncryptionService.shared
@@ -376,6 +386,29 @@ public final class PoolChatViewModel: ObservableObject, PoolChatAppLifecycle {
             // Log state
             log("[SETUP] setPoolManager called (no existing session), poolState: \(manager.poolState)", category: .network)
         }
+
+        // Wire up call manager
+        callManager.delegate = self
+        callManager.localPeerID = manager.localPeerID
+        callManager.localDisplayName = manager.localPeerName
+
+        // Subscribe to call state changes to drive UI
+        callManager.$incomingCallSignal
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] signal in
+                self?.showIncomingCallView = signal != nil
+            }
+            .store(in: &cancellables)
+
+        callManager.$currentCall
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] call in
+                if call == nil {
+                    self?.showActiveCallView = false
+                    self?.showIncomingCallView = false
+                }
+            }
+            .store(in: &cancellables)
     }
 
     /// Helper to load chat history if connected to a pool
@@ -901,6 +934,8 @@ public final class PoolChatViewModel: ObservableObject, PoolChatAppLifecycle {
         if isRecordingVoice {
             cancelVoiceRecording()
         }
+        // End any active call on suspend
+        callManager.endCall()
         log("[NOTIFICATION] PoolChat suspended (minimized), isWindowVisible set to false", category: .runtime)
     }
 
@@ -910,6 +945,8 @@ public final class PoolChatViewModel: ObservableObject, PoolChatAppLifecycle {
         isWindowVisible = false
         voiceService.stop()
         voiceService.cancelRecording()
+        // End any active call on terminate
+        callManager.endCall()
         setupTasks.forEach { $0.cancel() }
         setupTasks.removeAll()
         cancellables.removeAll()
@@ -2031,6 +2068,14 @@ public final class PoolChatViewModel: ObservableObject, PoolChatAppLifecycle {
 
         case .clearHistory:
             handleDecryptedClearHistory(decryptedData, from: senderPeerID)
+
+        case .callSignal:
+            if let signal = try? JSONDecoder().decode(CallSignal.self, from: decryptedData) {
+                callManager.handleCallSignal(signal, from: senderPeerID)
+            }
+
+        case .mediaFrame:
+            callManager.handleMediaFrame(decryptedData, from: senderPeerID)
         }
     }
 
@@ -2187,6 +2232,16 @@ public final class PoolChatViewModel: ObservableObject, PoolChatAppLifecycle {
 
         case .clearHistory:
             handleDecryptedClearHistory(data, from: senderPeerID)
+
+        case .callSignal:
+            if let signal = try? JSONDecoder().decode(CallSignal.self, from: data) {
+                callManager.handleCallSignal(signal, from: senderPeerID)
+            } else {
+                log("[CALL] Failed to decode call signal from \(senderPeerID.prefix(8))...", level: .warning, category: .network)
+            }
+
+        case .mediaFrame:
+            callManager.handleMediaFrame(data, from: senderPeerID)
         }
     }
 
@@ -2446,6 +2501,9 @@ public final class PoolChatViewModel: ObservableObject, PoolChatAppLifecycle {
             if chatMode.isGroup {
                 messages = groupMessages
             }
+
+            // Notify call manager of peer disconnection
+            callManager.handlePeerDisconnected(peer.id)
 
             // Notify relay service of peer disconnection
             relayService?.peerDisconnected(peer.id)
@@ -3605,5 +3663,103 @@ public final class PoolChatViewModel: ObservableObject, PoolChatAppLifecycle {
     /// Get total unread count across all group chats
     public var totalGroupUnreadCount: Int {
         groupChatInfos.reduce(0) { $0 + $1.unreadCount }
+    }
+}
+
+// MARK: - CallManagerDelegate
+
+extension PoolChatViewModel: CallManagerDelegate {
+
+    public func callManager(_ manager: CallManager, sendSignal signal: CallSignal, to peerIDs: [String]) {
+        guard let payloadData = try? JSONEncoder().encode(signal) else {
+            log("[CALL] Failed to encode call signal", level: .error, category: .network)
+            return
+        }
+        sendEncryptedPayload(
+            payloadData,
+            messageType: .callSignal,
+            isPrivateChat: peerIDs.count == 1,
+            targetPeerIDs: peerIDs
+        )
+    }
+
+    public func callManager(_ manager: CallManager, sendMediaFrame data: Data, to peerIDs: [String]) {
+        guard let poolManager else { return }
+        let header = MediaFrameCodec.unpack(data)?.header
+
+        // Audio stays on unreliable delivery for low latency. Video uses reliable delivery
+        // because the encrypted JSON wrapper materially inflates packet size and MC
+        // unreliable delivery has proven too lossy/fragile for H.264 frame transport.
+        let useReliableDelivery = header?.mediaType == .video
+
+        for peerID in peerIDs {
+            guard encryptionService.hasKeyFor(peerID: peerID) else { continue }
+            guard let encryptedData = encryptionService.encrypt(data, for: peerID) else { continue }
+
+            let encryptedPayload = EncryptedChatPayload(
+                encryptedData: encryptedData,
+                senderPeerID: poolManager.localPeerID,
+                isPrivateChat: false,
+                targetPeerID: peerID,
+                messageType: .mediaFrame
+            )
+
+            guard let wrappedData = try? JSONEncoder().encode(encryptedPayload) else { continue }
+
+            var message = PoolMessage(
+                type: .custom,
+                senderID: poolManager.localPeerID,
+                senderName: poolManager.localPeerName,
+                payload: wrappedData
+            )
+            message.isReliable = useReliableDelivery ? true : false
+            poolManager.sendMessage(message, to: [peerID])
+        }
+    }
+
+    public func callManager(_ manager: CallManager, callDidEnd callID: UUID, duration: TimeInterval?, reason: CallEndReason) {
+        // Insert a system message recording the call in the chat
+        let durationText: String
+        if let duration, duration > 0 {
+            let minutes = Int(duration) / 60
+            let seconds = Int(duration) % 60
+            durationText = minutes > 0 ? "\(minutes)m \(seconds)s" : "\(seconds)s"
+        } else {
+            durationText = reason == .rejected ? "Declined" : (reason == .busy ? "Busy" : "Missed")
+        }
+
+        let isVideo = manager.currentCall?.isVideoCall ?? false
+        let callType = isVideo ? "Video call" : "Voice call"
+        let text = "\(callType) \u{00B7} \(durationText)"
+
+        let systemMessage = RichChatMessage(
+            id: UUID(),
+            senderID: "system",
+            senderName: "System",
+            contentType: .system,
+            timestamp: Date(),
+            isFromLocalUser: false,
+            text: text
+        )
+
+        // Add to current chat context
+        if let privatePeerID = chatMode.privatePeerID {
+            if privateMessages[privatePeerID] == nil {
+                privateMessages[privatePeerID] = []
+            }
+            privateMessages[privatePeerID]?.append(systemMessage)
+            if chatMode == .privateChat(peerID: privatePeerID) {
+                messages.append(systemMessage)
+            }
+        } else {
+            groupMessages.append(systemMessage)
+            if chatMode == .group {
+                messages.append(systemMessage)
+            }
+        }
+    }
+
+    public func callManager(_ manager: CallManager, displayNameFor peerID: String) -> String {
+        connectedPeers.first(where: { $0.id == peerID })?.displayName ?? peerID.prefix(8).description
     }
 }

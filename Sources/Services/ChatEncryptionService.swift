@@ -320,6 +320,16 @@ public final class ChatEncryptionService: @unchecked Sendable {
         lock.withLock { _peerKeys[peerID] != nil }
     }
 
+    /// Retrieve the shared symmetric key for a peer.
+    ///
+    /// Used by ``MediaEncryptionService`` to derive per-call media encryption keys
+    /// via HKDF without requiring a separate key exchange.
+    /// - Parameter peerID: The peer ID to retrieve the key for.
+    /// - Returns: The shared symmetric key, or nil if no key exchange has completed.
+    public func getSharedKey(for peerID: String) -> SymmetricKey? {
+        lock.withLock { _peerKeys[peerID] }
+    }
+
     /// Get the count of established peer keys
     public var peerKeyCount: Int {
         lock.withLock { _peerKeys.count }

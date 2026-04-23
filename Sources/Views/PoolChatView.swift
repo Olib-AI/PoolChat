@@ -88,7 +88,15 @@ public struct PoolChatView: View {
                 connectedPeers: viewModel.connectedPeers,
                 isConnected: viewModel.isConnected,
                 isHost: viewModel.isPoolHost,
-                onClearHistory: { viewModel.showClearHistoryDialog() }
+                onClearHistory: { viewModel.showClearHistoryDialog() },
+                onGroupVoiceCall: {
+                    viewModel.callManager.initiateCall(to: viewModel.connectedPeers.map(\.id), video: false)
+                    viewModel.showActiveCallView = true
+                },
+                onGroupVideoCall: {
+                    viewModel.callManager.initiateCall(to: viewModel.connectedPeers.map(\.id), video: true)
+                    viewModel.showActiveCallView = true
+                }
             )
 
             // Main content area
@@ -204,6 +212,53 @@ public struct PoolChatView: View {
         .animation(.easeInOut(duration: 0.2), value: viewModel.selectedChatTab)
         .animation(.easeInOut(duration: 0.2), value: viewModel.replyingToMessage != nil)
         .animation(.easeInOut(duration: 0.15), value: viewModel.showMentionPicker)
+        // MARK: - Call UI Integration
+        // Audio call banner (shown at top when audio call is active)
+        .overlay(alignment: .top) {
+            if let session = viewModel.callManager.currentCall,
+               session.state == .active,
+               !session.isVideoCall,
+               !viewModel.showActiveCallView {
+                AudioCallBannerView(
+                    callManager: viewModel.callManager,
+                    callSession: session,
+                    onTap: { viewModel.showActiveCallView = true }
+                )
+                .padding(.top, 4)
+                .transition(.move(edge: .top).combined(with: .opacity))
+            }
+        }
+        // Incoming call full-screen cover
+        .fullScreenCover(isPresented: $viewModel.showIncomingCallView) {
+            if let signal = viewModel.callManager.incomingCallSignal {
+                IncomingCallView(
+                    signal: signal,
+                    onAnswer: {
+                        viewModel.callManager.answerCall()
+                        viewModel.showIncomingCallView = false
+                        viewModel.showActiveCallView = true
+                    },
+                    onDecline: {
+                        viewModel.callManager.rejectCall()
+                        viewModel.showIncomingCallView = false
+                    }
+                )
+            }
+        }
+        // Active call full-screen cover
+        .fullScreenCover(isPresented: $viewModel.showActiveCallView) {
+            if let session = viewModel.callManager.currentCall {
+                ActiveCallView(
+                    callManager: viewModel.callManager,
+                    callSession: session
+                )
+            } else {
+                // Safety: dismiss if call ended while cover was presented
+                Color.clear.onAppear {
+                    viewModel.showActiveCallView = false
+                }
+            }
+        }
         .onAppear {
             // Mark window as visible for notification handling
             // Note: This is a fallback - visibility is primarily managed by AppWindow lifecycle methods
@@ -334,7 +389,15 @@ public struct PoolChatView: View {
                 PrivateChatHeader(
                     peer: selectedPeer,
                     isOnline: viewModel.connectedPeers.contains(where: { $0.id == selectedPeer.id }),
-                    onBack: { viewModel.backToPrivateChatsList() }
+                    onBack: { viewModel.backToPrivateChatsList() },
+                    onVoiceCall: {
+                        viewModel.callManager.initiateCall(to: [selectedPeer.id], video: false)
+                        viewModel.showActiveCallView = true
+                    },
+                    onVideoCall: {
+                        viewModel.callManager.initiateCall(to: [selectedPeer.id], video: true)
+                        viewModel.showActiveCallView = true
+                    }
                 )
 
                 MessagesListView(
@@ -454,6 +517,8 @@ struct PrivateChatHeader: View {
     let peer: Peer
     let isOnline: Bool
     let onBack: () -> Void
+    var onVoiceCall: (() -> Void)?
+    var onVideoCall: (() -> Void)?
 
     private var avatarColor: Color {
         let colors: [Color] = [.blue, .green, .orange, .purple, .pink, .cyan, .yellow, .red]
@@ -504,6 +569,28 @@ struct PrivateChatHeader: View {
             }
 
             Spacer()
+
+            // Call buttons (only shown when peer is online)
+            if isOnline {
+                HStack(spacing: 12) {
+                    if let onVoiceCall {
+                        Button(action: onVoiceCall) {
+                            Image(systemName: "phone.fill")
+                                .font(.system(size: 15))
+                                .foregroundStyle(.blue)
+                        }
+                        .buttonStyle(.plain)
+                    }
+                    if let onVideoCall {
+                        Button(action: onVideoCall) {
+                            Image(systemName: "video.fill")
+                                .font(.system(size: 15))
+                                .foregroundStyle(.blue)
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+            }
 
             // Encryption indicator
             HStack(spacing: 4) {
@@ -1180,6 +1267,8 @@ struct ConnectionStatusBar: View {
     let isConnected: Bool
     let isHost: Bool
     let onClearHistory: () -> Void
+    var onGroupVoiceCall: (() -> Void)?
+    var onGroupVideoCall: (() -> Void)?
 
     var body: some View {
         HStack(spacing: 8) {
@@ -1231,6 +1320,24 @@ struct ConnectionStatusBar: View {
                 Text("\(connectedPeers.count) online")
                     .font(.system(size: 11))
                     .foregroundStyle(.secondary)
+
+                // Group call buttons
+                if let onGroupVoiceCall {
+                    Button(action: onGroupVoiceCall) {
+                        Image(systemName: "phone.fill")
+                            .font(.system(size: 14))
+                            .foregroundStyle(.blue)
+                    }
+                    .buttonStyle(.plain)
+                }
+                if let onGroupVideoCall {
+                    Button(action: onGroupVideoCall) {
+                        Image(systemName: "video.fill")
+                            .font(.system(size: 14))
+                            .foregroundStyle(.blue)
+                    }
+                    .buttonStyle(.plain)
+                }
             }
 
             // Options menu (only when connected)
