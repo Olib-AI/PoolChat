@@ -101,14 +101,17 @@ public struct PoolChatView: View {
                 isConnected: viewModel.isConnected,
                 isHost: viewModel.isPoolHost,
                 onClearHistory: { viewModel.showClearHistoryDialog() },
-                onGroupVoiceCall: {
+                // Hide group-call buttons here while a private chat is active —
+                // the private peer header carries its own per-peer call buttons,
+                // and showing both reads as duplicate.
+                onGroupVoiceCall: viewModel.chatMode.isGroup ? {
                     viewModel.callManager.initiateCall(to: viewModel.connectedPeers.map(\.id), video: false)
                     viewModel.showActiveCallView = true
-                },
-                onGroupVideoCall: {
+                } : nil,
+                onGroupVideoCall: viewModel.chatMode.isGroup ? {
                     viewModel.callManager.initiateCall(to: viewModel.connectedPeers.map(\.id), video: true)
                     viewModel.showActiveCallView = true
-                }
+                } : nil
             )
 
             // Main content area
