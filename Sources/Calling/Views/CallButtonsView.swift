@@ -5,12 +5,19 @@
 // StealthOS - stealthos.app
 
 import SwiftUI
+import ConnectionPool
 
 // MARK: - Call Control Button
 
 /// A circular control button used in call views.
 struct CallControlButton: View {
-    let systemImage: String
+    @ObservedObject private var design = PoolDesign.shared
+    @Environment(\.colorScheme) private var scheme
+
+    /// Font Awesome icon name (rendered via the injected renderer in-app).
+    let icon: String
+    /// Legacy SF Symbol used only when no icon renderer is wired.
+    let systemFallback: String
     let label: String
     var isActive: Bool = false
     var isDestructive: Bool = false
@@ -18,33 +25,33 @@ struct CallControlButton: View {
     let action: () -> Void
 
     var body: some View {
-        VStack(spacing: 6) {
+        let theme = design.snapshot(dark: scheme == .dark)
+        VStack(spacing: theme.spacingS) {
             Button(action: action) {
-                Image(systemName: systemImage)
-                    .font(.system(size: size * 0.38, weight: .medium))
-                    .foregroundColor(buttonForeground)
+                PoolIcon(icon, size: size * 0.38, weight: .solid, systemFallback: systemFallback)
+                    .foregroundColor(buttonForeground(theme))
                     .frame(width: size, height: size)
-                    .background(buttonBackground)
+                    .background(buttonBackground(theme))
                     .clipShape(Circle())
             }
             .buttonStyle(.plain)
 
             Text(label)
-                .font(.caption2)
-                .foregroundColor(.secondary)
+                .font(theme.fontCaption)
+                .foregroundColor(theme.textSecondary)
         }
     }
 
-    private var buttonForeground: Color {
-        if isDestructive { return .white }
-        if isActive { return .primary }
-        return .white
+    private func buttonForeground(_ theme: PoolThemeSnapshot) -> Color {
+        if isDestructive { return theme.textOnAccent }
+        if isActive { return theme.accent }
+        return theme.textPrimary
     }
 
-    private var buttonBackground: Color {
-        if isDestructive { return .red }
-        if isActive { return Color.white.opacity(0.25) }
-        return Color.white.opacity(0.12)
+    private func buttonBackground(_ theme: PoolThemeSnapshot) -> Color {
+        if isDestructive { return theme.danger }
+        if isActive { return theme.accent.opacity(0.22) }
+        return theme.surfaceSecondary
     }
 }
 
@@ -53,6 +60,7 @@ struct CallControlButton: View {
 /// Bottom control bar for an active call.
 struct CallButtonsView: View {
     @ObservedObject var callSession: CallSession
+    @ObservedObject private var design = PoolDesign.shared
     let onToggleMute: () -> Void
     let onToggleSpeaker: () -> Void
     let onToggleVideo: () -> Void
@@ -62,16 +70,20 @@ struct CallButtonsView: View {
         HStack(spacing: 28) {
             // Mute
             CallControlButton(
-                systemImage: callSession.localAudioMuted ? "mic.slash.fill" : "mic.fill",
-                label: callSession.localAudioMuted ? "Unmute" : "Mute",
+                icon: callSession.localAudioMuted ? "microphone-slash" : "microphone",
+                systemFallback: callSession.localAudioMuted ? "mic.slash.fill" : "mic.fill",
+                label: callSession.localAudioMuted
+                    ? poolString("poolchat.call.unmute", fallback: "Unmute")
+                    : poolString("poolchat.call.mute", fallback: "Mute"),
                 isActive: callSession.localAudioMuted,
                 action: onToggleMute
             )
 
             // Speaker
             CallControlButton(
-                systemImage: callSession.speakerEnabled ? "speaker.wave.3.fill" : "speaker.fill",
-                label: "Speaker",
+                icon: callSession.speakerEnabled ? "volume-high" : "volume",
+                systemFallback: callSession.speakerEnabled ? "speaker.wave.3.fill" : "speaker.fill",
+                label: poolString("poolchat.call.speaker", fallback: "Speaker"),
                 isActive: callSession.speakerEnabled,
                 action: onToggleSpeaker
             )
@@ -79,8 +91,11 @@ struct CallButtonsView: View {
             // Video toggle (only for video calls)
             if callSession.isVideoCall {
                 CallControlButton(
-                    systemImage: callSession.localVideoEnabled ? "video.fill" : "video.slash.fill",
-                    label: callSession.localVideoEnabled ? "Camera" : "Camera Off",
+                    icon: callSession.localVideoEnabled ? "video" : "video-slash",
+                    systemFallback: callSession.localVideoEnabled ? "video.fill" : "video.slash.fill",
+                    label: callSession.localVideoEnabled
+                        ? poolString("poolchat.call.camera", fallback: "Camera")
+                        : poolString("poolchat.call.cameraOff", fallback: "Camera Off"),
                     isActive: !callSession.localVideoEnabled,
                     action: onToggleVideo
                 )
@@ -88,8 +103,9 @@ struct CallButtonsView: View {
 
             // End call
             CallControlButton(
-                systemImage: "phone.down.fill",
-                label: "End",
+                icon: "phone-slash",
+                systemFallback: "phone.down.fill",
+                label: poolString("poolchat.call.end", fallback: "End"),
                 isDestructive: true,
                 size: 64,
                 action: onEndCall

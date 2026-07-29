@@ -6,6 +6,7 @@
 
 import SwiftUI
 import CoreVideo
+import ConnectionPool
 
 // MARK: - Active Call View
 
@@ -16,6 +17,8 @@ import CoreVideo
 public struct ActiveCallView: View {
     @ObservedObject var callManager: CallManager
     @ObservedObject var callSession: CallSession
+    @ObservedObject private var design = PoolDesign.shared
+    @Environment(\.colorScheme) private var scheme
 
     @State private var showControls = true
 
@@ -26,6 +29,8 @@ public struct ActiveCallView: View {
         self.callManager = callManager
         self.callSession = callSession
     }
+
+    private var theme: PoolThemeSnapshot { design.snapshot(dark: scheme == .dark) }
 
     public var body: some View {
         // TimelineView updates every second to drive the duration display
@@ -44,26 +49,21 @@ public struct ActiveCallView: View {
 
     private var audioCallContent: some View {
         ZStack {
-            // Dark background
-            LinearGradient(
-                colors: [Color(white: 0.12), Color.black],
-                startPoint: .top,
-                endPoint: .bottom
-            )
-            .ignoresSafeArea()
+            theme.background
+                .ignoresSafeArea()
 
-            VStack(spacing: 24) {
+            VStack(spacing: theme.spacingXL) {
                 Spacer()
 
                 // Call state indicator
                 if callSession.state == .connecting {
-                    Text("Connecting...")
-                        .font(.subheadline)
-                        .foregroundColor(.secondary)
+                    PoolText("poolchat.call.connecting", fallback: "Connecting…")
+                        .font(theme.fontBody)
+                        .foregroundColor(theme.textSecondary)
                 } else {
                     Text(formattedDuration)
-                        .font(.subheadline.monospacedDigit())
-                        .foregroundColor(.secondary)
+                        .font(theme.fontBody.monospacedDigit())
+                        .foregroundColor(theme.textSecondary)
                 }
 
                 // Participant avatars
@@ -71,9 +71,9 @@ public struct ActiveCallView: View {
 
                 // Participant names
                 Text(participantNames)
-                    .font(.title2)
+                    .font(theme.fontHeading)
                     .fontWeight(.semibold)
-                    .foregroundColor(.white)
+                    .foregroundColor(theme.textPrimary)
                     .multilineTextAlignment(.center)
 
                 // Mute indicators for remote participants
@@ -89,7 +89,7 @@ public struct ActiveCallView: View {
                     onToggleVideo: { callManager.toggleVideo() },
                     onEndCall: { callManager.endCall() }
                 )
-                .padding(.bottom, 24)
+                .padding(.bottom, theme.spacingXL)
             }
         }
     }
@@ -98,6 +98,8 @@ public struct ActiveCallView: View {
 
     private var videoCallContent: some View {
         ZStack {
+            // Video letterbox is always black regardless of theme (functional
+            // surface behind camera frames, not chrome).
             Color.black.ignoresSafeArea()
 
             // Remote video (full screen)
@@ -109,12 +111,12 @@ public struct ActiveCallView: View {
                 // No video yet - show avatar
                 VStack {
                     Text(participantNames)
-                        .font(.title2)
+                        .font(theme.fontHeading)
                         .foregroundColor(.white)
                     if callSession.state == .connecting {
-                        Text("Connecting...")
-                            .font(.subheadline)
-                            .foregroundColor(.secondary)
+                        PoolText("poolchat.call.connecting", fallback: "Connecting…")
+                            .font(theme.fontBody)
+                            .foregroundColor(.white.opacity(0.7))
                     }
                 }
             }
@@ -131,10 +133,10 @@ public struct ActiveCallView: View {
                         Spacer()
                         VideoTileView(pixelBuffer: localBuffer, isMirrored: true)
                             .frame(width: 120, height: 160)
-                            .clipShape(RoundedRectangle(cornerRadius: 12))
-                            .shadow(radius: 4)
+                            .clipShape(RoundedRectangle(cornerRadius: theme.radiusMedium, style: .continuous))
+                            .shadow(color: theme.shadow.opacity(0.4), radius: 4)
                             .padding(.top, 50)
-                            .padding(.trailing, 16)
+                            .padding(.trailing, theme.spacingL)
                     }
                     Spacer()
                 }
@@ -146,21 +148,21 @@ public struct ActiveCallView: View {
                 HStack {
                     if callSession.state == .active {
                         Text(formattedDuration)
-                            .font(.subheadline.monospacedDigit())
+                            .font(theme.fontBody.monospacedDigit())
                             .foregroundColor(.white)
-                            .padding(.horizontal, 12)
-                            .padding(.vertical, 6)
+                            .padding(.horizontal, theme.spacingM)
+                            .padding(.vertical, theme.spacingXS + 2)
                             .background(Color.black.opacity(0.5))
                             .clipShape(Capsule())
                     }
                     Spacer()
                 }
                 .padding(.top, 50)
-                .padding(.leading, 16)
+                .padding(.leading, theme.spacingL)
 
                 Spacer()
 
-                // Bottom controls
+                // Bottom controls, on a legibility scrim over the video.
                 CallButtonsView(
                     callSession: callSession,
                     onToggleMute: { callManager.toggleMute() },
@@ -168,14 +170,8 @@ public struct ActiveCallView: View {
                     onToggleVideo: { callManager.toggleVideo() },
                     onEndCall: { callManager.endCall() }
                 )
-                .background(
-                    LinearGradient(
-                        colors: [Color.clear, Color.black.opacity(0.7)],
-                        startPoint: .top,
-                        endPoint: .bottom
-                    )
-                )
-                .padding(.bottom, 16)
+                .background(Color.black.opacity(0.4))
+                .padding(.bottom, theme.spacingL)
             }
         }
         .onTapGesture {
@@ -204,11 +200,11 @@ public struct ActiveCallView: View {
                     } else {
                         // Placeholder for peer with no video
                         Rectangle()
-                            .fill(Color(white: 0.15))
+                            .fill(Color.black.opacity(0.85))
                             .overlay {
-                                VStack(spacing: 8) {
+                                VStack(spacing: theme.spacingS) {
                                     Circle()
-                                        .fill(Color.blue.opacity(0.3))
+                                        .fill(theme.accent.opacity(0.3))
                                         .frame(width: 60, height: 60)
                                         .overlay {
                                             Text(String((callSession.participantNames[peerID] ?? "?").prefix(1)).uppercased())
@@ -216,8 +212,8 @@ public struct ActiveCallView: View {
                                                 .foregroundColor(.white)
                                         }
                                     Text(callSession.participantNames[peerID] ?? peerID.prefix(8).description)
-                                        .font(.caption)
-                                        .foregroundColor(.secondary)
+                                        .font(theme.fontCaption)
+                                        .foregroundColor(.white.opacity(0.7))
                                 }
                             }
                             .frame(height: tileHeight)
@@ -233,21 +229,20 @@ public struct ActiveCallView: View {
         HStack(spacing: -12) {
             ForEach(callSession.participants.prefix(4), id: \.self) { peerID in
                 Circle()
-                    .fill(Color.blue.opacity(0.3))
+                    .fill(theme.accent.opacity(0.3))
                     .frame(width: 80, height: 80)
                     .overlay {
                         Text(String((callSession.participantNames[peerID] ?? "?").prefix(1)).uppercased())
                             .font(.system(size: 32, weight: .bold))
-                            .foregroundColor(.white)
+                            .foregroundColor(theme.accent)
                     }
                     .overlay {
                         // Mute indicator
                         if callSession.remoteParticipantStates[peerID]?.audioMuted == true {
-                            Image(systemName: "mic.slash.fill")
-                                .font(.caption)
-                                .foregroundColor(.red)
-                                .padding(4)
-                                .background(Color.black.opacity(0.6))
+                            PoolIcon("microphone-slash", size: 12, systemFallback: "mic.slash.fill")
+                                .foregroundColor(theme.danger)
+                                .padding(theme.spacingXS)
+                                .background(theme.surface)
                                 .clipShape(Circle())
                                 .offset(x: 28, y: 28)
                         }
@@ -259,16 +254,19 @@ public struct ActiveCallView: View {
     // MARK: - Remote Status Indicators
 
     private var remoteStatusIndicators: some View {
-        VStack(spacing: 4) {
+        VStack(spacing: theme.spacingXS) {
             ForEach(callSession.participants, id: \.self) { peerID in
                 if let state = callSession.remoteParticipantStates[peerID], state.audioMuted {
-                    HStack(spacing: 4) {
-                        Image(systemName: "mic.slash.fill")
-                            .font(.caption2)
-                        Text("\(callSession.participantNames[peerID] ?? "Peer") is muted")
-                            .font(.caption2)
+                    HStack(spacing: theme.spacingXS) {
+                        PoolIcon("microphone-slash", size: 11, systemFallback: "mic.slash.fill")
+                        Text(poolString(
+                            "poolchat.call.participantMuted",
+                            fallback: "\(callSession.participantNames[peerID] ?? "Peer") is muted",
+                            args: ["name": callSession.participantNames[peerID] ?? poolString("poolchat.call.peer", fallback: "Peer")]
+                        ))
+                        .font(theme.fontCaption)
                     }
-                    .foregroundColor(.secondary)
+                    .foregroundColor(theme.textSecondary)
                 }
             }
         }
@@ -298,6 +296,8 @@ public struct ActiveCallView: View {
 public struct AudioCallBannerView: View {
     @ObservedObject var callManager: CallManager
     @ObservedObject var callSession: CallSession
+    @ObservedObject private var design = PoolDesign.shared
+    @Environment(\.colorScheme) private var scheme
     let onTap: () -> Void
 
     public init(callManager: CallManager, callSession: CallSession, onTap: @escaping () -> Void) {
@@ -307,49 +307,49 @@ public struct AudioCallBannerView: View {
     }
 
     public var body: some View {
+        let theme = design.snapshot(dark: scheme == .dark)
         TimelineView(.periodic(from: .now, by: 1.0)) { _ in
         Button(action: onTap) {
-            HStack(spacing: 10) {
-                // Green call indicator
+            HStack(spacing: theme.spacingS) {
+                // Active-call indicator
                 Circle()
-                    .fill(Color.green)
+                    .fill(theme.success)
                     .frame(width: 8, height: 8)
 
-                Image(systemName: "phone.fill")
-                    .font(.caption)
-                    .foregroundColor(.green)
+                PoolIcon("phone", size: 12, systemFallback: "phone.fill")
+                    .foregroundColor(theme.success)
 
                 Text(participantNames)
-                    .font(.caption)
-                    .foregroundColor(.white)
+                    .font(theme.fontCaption)
+                    .foregroundColor(theme.textPrimary)
                     .lineLimit(1)
 
                 Spacer()
 
                 Text(formattedDuration)
-                    .font(.caption.monospacedDigit())
-                    .foregroundColor(.white.opacity(0.7))
+                    .font(theme.fontCaption.monospacedDigit())
+                    .foregroundColor(theme.textSecondary)
 
                 // End call button
                 Button {
                     callManager.endCall()
                 } label: {
-                    Image(systemName: "phone.down.fill")
-                        .font(.caption)
-                        .foregroundColor(.white)
-                        .padding(6)
-                        .background(Color.red)
+                    PoolIcon("phone-slash", size: 12, systemFallback: "phone.down.fill")
+                        .foregroundColor(theme.textOnAccent)
+                        .padding(theme.spacingXS + 2)
+                        .background(theme.danger)
                         .clipShape(Circle())
                 }
                 .buttonStyle(.plain)
+                .accessibilityLabel(poolString("poolchat.call.end", fallback: "End"))
             }
-            .padding(.horizontal, 12)
-            .padding(.vertical, 8)
-            .background(Color(white: 0.2))
-            .clipShape(RoundedRectangle(cornerRadius: 10))
+            .padding(.horizontal, theme.spacingM)
+            .padding(.vertical, theme.spacingS)
+            .background(theme.surfaceElevated)
+            .clipShape(RoundedRectangle(cornerRadius: theme.radiusMedium, style: .continuous))
         }
         .buttonStyle(.plain)
-        .padding(.horizontal, 8)
+        .padding(.horizontal, theme.spacingS)
         } // TimelineView
     }
 

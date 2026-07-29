@@ -5,6 +5,7 @@
 // StealthOS - stealthos.app
 
 import SwiftUI
+import ConnectionPool
 
 // MARK: - Incoming Call View
 
@@ -17,6 +18,9 @@ public struct IncomingCallView: View {
     let onAnswer: () -> Void
     let onDecline: () -> Void
 
+    @ObservedObject private var design = PoolDesign.shared
+    @Environment(\.colorScheme) private var scheme
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var pulseAnimation = false
 
     public init(signal: CallSignal, onAnswer: @escaping () -> Void, onDecline: @escaping () -> Void) {
@@ -26,44 +30,48 @@ public struct IncomingCallView: View {
     }
 
     public var body: some View {
+        let theme = design.snapshot(dark: scheme == .dark)
         ZStack {
-            // Background
-            LinearGradient(
-                colors: [Color.black.opacity(0.9), Color(white: 0.1)],
-                startPoint: .top,
-                endPoint: .bottom
-            )
-            .ignoresSafeArea()
+            theme.background
+                .ignoresSafeArea()
 
-            VStack(spacing: 32) {
+            VStack(spacing: theme.spacingXL) {
                 Spacer()
 
                 // Call type indicator
-                HStack(spacing: 8) {
-                    Image(systemName: signal.isVideoCall ? "video.fill" : "phone.fill")
-                        .foregroundColor(.secondary)
-                    Text(signal.isVideoCall ? "Incoming Video Call" : "Incoming Voice Call")
-                        .font(.subheadline)
-                        .foregroundColor(.secondary)
+                HStack(spacing: theme.spacingS) {
+                    PoolIcon(
+                        signal.isVideoCall ? "video" : "phone",
+                        size: 14,
+                        systemFallback: signal.isVideoCall ? "video.fill" : "phone.fill"
+                    )
+                    .foregroundColor(theme.textSecondary)
+                    PoolText(
+                        signal.isVideoCall ? "poolchat.call.incomingVideo" : "poolchat.call.incomingVoice",
+                        fallback: signal.isVideoCall ? "Incoming Video Call" : "Incoming Voice Call"
+                    )
+                    .font(theme.fontBody)
+                    .foregroundColor(theme.textSecondary)
                 }
 
                 // Caller avatar with pulse effect
                 ZStack {
                     Circle()
-                        .fill(Color.blue.opacity(0.15))
+                        .fill(theme.accent.opacity(0.15))
                         .frame(width: 120, height: 120)
                         .scaleEffect(pulseAnimation ? 1.2 : 1.0)
                         .opacity(pulseAnimation ? 0 : 0.5)
 
                     Circle()
-                        .fill(Color.blue.opacity(0.2))
+                        .fill(theme.accent.opacity(0.2))
                         .frame(width: 100, height: 100)
 
                     Text(callerInitial)
                         .font(.system(size: 40, weight: .bold))
-                        .foregroundColor(.white)
+                        .foregroundColor(theme.accent)
                 }
                 .onAppear {
+                    guard !reduceMotion else { return }
                     withAnimation(.easeInOut(duration: 1.5).repeatForever(autoreverses: false)) {
                         pulseAnimation = true
                     }
@@ -71,46 +79,50 @@ public struct IncomingCallView: View {
 
                 // Caller name
                 Text(signal.callerDisplayName)
-                    .font(.title)
+                    .font(theme.fontHeading)
                     .fontWeight(.semibold)
-                    .foregroundColor(.white)
+                    .foregroundColor(theme.textPrimary)
 
                 Spacer()
 
                 // Action buttons
                 HStack(spacing: 60) {
                     // Decline
-                    VStack(spacing: 8) {
+                    VStack(spacing: theme.spacingS) {
                         Button(action: onDecline) {
-                            Image(systemName: "phone.down.fill")
-                                .font(.system(size: 28))
-                                .foregroundColor(.white)
+                            PoolIcon("phone-slash", size: 28, systemFallback: "phone.down.fill")
+                                .foregroundColor(theme.textOnAccent)
                                 .frame(width: 72, height: 72)
-                                .background(Color.red)
+                                .background(theme.danger)
                                 .clipShape(Circle())
                         }
                         .buttonStyle(.plain)
+                        .accessibilityLabel(poolString("poolchat.call.decline", fallback: "Decline"))
 
-                        Text("Decline")
-                            .font(.caption)
-                            .foregroundColor(.secondary)
+                        PoolText("poolchat.call.decline", fallback: "Decline")
+                            .font(theme.fontCaption)
+                            .foregroundColor(theme.textSecondary)
                     }
 
                     // Answer
-                    VStack(spacing: 8) {
+                    VStack(spacing: theme.spacingS) {
                         Button(action: onAnswer) {
-                            Image(systemName: signal.isVideoCall ? "video.fill" : "phone.fill")
-                                .font(.system(size: 28))
-                                .foregroundColor(.white)
-                                .frame(width: 72, height: 72)
-                                .background(Color.green)
-                                .clipShape(Circle())
+                            PoolIcon(
+                                signal.isVideoCall ? "video" : "phone",
+                                size: 28,
+                                systemFallback: signal.isVideoCall ? "video.fill" : "phone.fill"
+                            )
+                            .foregroundColor(theme.textOnAccent)
+                            .frame(width: 72, height: 72)
+                            .background(theme.success)
+                            .clipShape(Circle())
                         }
                         .buttonStyle(.plain)
+                        .accessibilityLabel(poolString("poolchat.call.accept", fallback: "Accept"))
 
-                        Text("Accept")
-                            .font(.caption)
-                            .foregroundColor(.secondary)
+                        PoolText("poolchat.call.accept", fallback: "Accept")
+                            .font(theme.fontCaption)
+                            .foregroundColor(theme.textSecondary)
                     }
                 }
                 .padding(.bottom, 60)

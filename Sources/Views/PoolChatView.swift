@@ -16,49 +16,6 @@ import AppKit
 
 // MARK: - Cross-Platform Helpers
 
-/// Cross-platform gray background color
-private extension Color {
-    static var systemGray6Color: Color {
-        #if canImport(UIKit)
-        return Color(.systemGray6)
-        #else
-        return Color(nsColor: .controlBackgroundColor)
-        #endif
-    }
-
-    static var systemGray5Color: Color {
-        #if canImport(UIKit)
-        return Color(.systemGray5)
-        #else
-        return Color(nsColor: .separatorColor)
-        #endif
-    }
-
-    static var systemBackgroundColor: Color {
-        #if canImport(UIKit)
-        return Color(.systemBackground)
-        #else
-        return Color(nsColor: .windowBackgroundColor)
-        #endif
-    }
-
-    static var secondarySystemGroupedBackgroundColor: Color {
-        #if canImport(UIKit)
-        return Color(uiColor: .secondarySystemGroupedBackground)
-        #else
-        return Color(nsColor: .controlBackgroundColor)
-        #endif
-    }
-
-    static var tertiarySystemGroupedBackgroundColor: Color {
-        #if canImport(UIKit)
-        return Color(uiColor: .tertiarySystemGroupedBackground)
-        #else
-        return Color(nsColor: .textBackgroundColor)
-        #endif
-    }
-}
-
 private extension View {
     @ViewBuilder
     func crossPlatformInlineNavigationTitle() -> some View {
@@ -88,13 +45,16 @@ private extension View {
 /// Main view for the Pool Chat standalone app
 public struct PoolChatView: View {
     @ObservedObject var viewModel: PoolChatViewModel
+    @ObservedObject private var design = PoolDesign.shared
+    @Environment(\.colorScheme) private var scheme
 
     public init(viewModel: PoolChatViewModel) {
         self.viewModel = viewModel
     }
 
     public var body: some View {
-        VStack(spacing: 0) {
+        let theme = design.snapshot(dark: scheme == .dark)
+        return VStack(spacing: 0) {
             // Connection status bar (compact, below window title bar)
             ConnectionStatusBar(
                 connectedPeers: viewModel.connectedPeers,
@@ -189,16 +149,16 @@ public struct PoolChatView: View {
                 }
             }
         }
-        .background(poolGroupedBackgroundColor)
+        .background(theme.background)
         .onChange(of: viewModel.selectedPhotoItem) { _, newValue in
             if newValue != nil {
                 viewModel.handleImageSelection()
             }
         }
-        .alert("Error", isPresented: $viewModel.showError) {
-            Button("OK", role: .cancel) {}
+        .alert(poolString("poolchat.error.title", fallback: "Error"), isPresented: $viewModel.showError) {
+            Button(poolString("common.ok", fallback: "OK"), role: .cancel) {}
         } message: {
-            Text(viewModel.errorMessage ?? "Unknown error")
+            Text(viewModel.errorMessage ?? poolString("poolchat.error.unknown", fallback: "Unknown error"))
         }
         .sheet(isPresented: $viewModel.showPollCreation) {
             PollCreationSheet(
@@ -215,7 +175,7 @@ public struct PoolChatView: View {
             clearHistoryAlertTitle,
             isPresented: $viewModel.showClearHistoryConfirmation
         ) {
-            Button("Cancel", role: .cancel) {}
+            Button(poolString("common.cancel", fallback: "Cancel"), role: .cancel) {}
             Button(clearHistoryButtonTitle, role: .destructive) {
                 viewModel.clearChatHistory()
             }
@@ -305,18 +265,22 @@ public struct PoolChatView: View {
     /// Title for the clear history alert based on current chat mode
     private var clearHistoryAlertTitle: String {
         if viewModel.chatMode.isGroup {
-            return viewModel.isPoolHost ? "Clear Chat History" : "Clear Your View"
+            return viewModel.isPoolHost
+                ? poolString("poolchat.clear.groupHostTitle", fallback: "Clear Chat History")
+                : poolString("poolchat.clear.groupMemberTitle", fallback: "Clear Your View")
         } else {
-            return "Clear Private Chat"
+            return poolString("poolchat.clear.privateTitle", fallback: "Clear Private Chat")
         }
     }
 
     /// Button title for the clear history alert
     private var clearHistoryButtonTitle: String {
         if viewModel.chatMode.isGroup {
-            return viewModel.isPoolHost ? "Clear for Everyone" : "Clear"
+            return viewModel.isPoolHost
+                ? poolString("poolchat.clear.forEveryone", fallback: "Clear for Everyone")
+                : poolString("poolchat.clear.confirm", fallback: "Clear")
         } else {
-            return "Clear"
+            return poolString("poolchat.clear.confirm", fallback: "Clear")
         }
     }
 
@@ -324,12 +288,12 @@ public struct PoolChatView: View {
     private var clearHistoryAlertMessage: String {
         if viewModel.chatMode.isGroup {
             if viewModel.isPoolHost {
-                return "This will clear the chat history for all pool members. This action cannot be undone."
+                return poolString("poolchat.clear.groupHostMessage", fallback: "This will clear the chat history for all pool members. This action cannot be undone.")
             } else {
-                return "This will clear your local chat view. Other members will still see the messages."
+                return poolString("poolchat.clear.groupMemberMessage", fallback: "This will clear your local chat view. Other members will still see the messages.")
             }
         } else {
-            return "This will clear your private conversation. The other participant's view will not be affected."
+            return poolString("poolchat.clear.privateMessage", fallback: "This will clear your private conversation. The other participant's view will not be affected.")
         }
     }
 
@@ -352,13 +316,13 @@ public struct PoolChatView: View {
                     HStack(spacing: 8) {
                         ProgressView()
                             .scaleEffect(0.8)
-                        Text("Loading history...")
+                        PoolText("poolchat.messages.loadingHistory", fallback: "Loading history…")
                             .font(.caption)
-                            .foregroundStyle(.secondary)
+                            .foregroundColor(design.snapshot(dark: scheme == .dark).textSecondary)
                     }
                     .padding(.vertical, 8)
                     .frame(maxWidth: .infinity)
-                    .background(Color.secondarySystemGroupedBackgroundColor.opacity(0.8))
+                    .background(design.snapshot(dark: scheme == .dark).surface.opacity(0.8))
                 }
 
                 MessagesListView(
@@ -454,12 +418,18 @@ struct ChatModeTabBar: View {
     let groupUnreadCount: Int
     let privateUnreadCount: Int
 
+    @ObservedObject private var design = PoolDesign.shared
+    @Environment(\.colorScheme) private var scheme
+
     var body: some View {
+        let theme = design.snapshot(dark: scheme == .dark)
         HStack(spacing: 0) {
             // Group tab
             TabButton(
-                title: "Group",
-                icon: "person.3.fill",
+                titleKey: "poolchat.tab.group",
+                titleFallback: "Group",
+                icon: "users",
+                systemFallback: "person.3.fill",
                 isSelected: selectedTab == 0,
                 badgeCount: groupUnreadCount
             ) {
@@ -468,59 +438,64 @@ struct ChatModeTabBar: View {
 
             // Divider
             Rectangle()
-                .fill(Color.gray.opacity(0.3))
+                .fill(theme.separator)
                 .frame(width: 1, height: 24)
 
             // Private tab
             TabButton(
-                title: "Private",
-                icon: "person.fill",
+                titleKey: "poolchat.tab.private",
+                titleFallback: "Private",
+                icon: "user",
+                systemFallback: "person.fill",
                 isSelected: selectedTab == 1,
                 badgeCount: privateUnreadCount
             ) {
                 selectedTab = 1
             }
         }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 8)
-        .background(Color.secondarySystemGroupedBackgroundColor)
+        .padding(.horizontal, theme.spacingM)
+        .padding(.vertical, theme.spacingS)
+        .background(theme.surface)
     }
 }
 
 struct TabButton: View {
-    let title: String
+    let titleKey: String
+    let titleFallback: String
     let icon: String
+    let systemFallback: String
     let isSelected: Bool
     let badgeCount: Int
     let action: () -> Void
 
-    var body: some View {
-        Button(action: action) {
-            HStack(spacing: 6) {
-                Image(systemName: icon)
-                    .font(.system(size: 14))
+    @ObservedObject private var design = PoolDesign.shared
+    @Environment(\.colorScheme) private var scheme
 
-                Text(title)
-                    .font(.system(size: 14, weight: .medium))
+    var body: some View {
+        let theme = design.snapshot(dark: scheme == .dark)
+        Button(action: action) {
+            HStack(spacing: theme.spacingXS + 2) {
+                PoolIcon(icon, size: 14, systemFallback: systemFallback)
+
+                PoolText(titleKey, fallback: titleFallback)
+                    .font(theme.fontBody.weight(.medium))
 
                 if badgeCount > 0 {
                     Text("\(badgeCount)")
                         .font(.system(size: 11, weight: .bold))
-                        .foregroundStyle(.white)
-                        .padding(.horizontal, 6)
+                        .foregroundColor(theme.textOnAccent)
+                        .padding(.horizontal, theme.spacingXS + 2)
                         .padding(.vertical, 2)
-                        .background(Capsule().fill(Color.red))
+                        .background(Capsule().fill(theme.danger))
                 }
             }
-            .foregroundStyle(isSelected ? .blue : .secondary)
+            .foregroundColor(isSelected ? theme.accent : theme.textSecondary)
             .frame(maxWidth: .infinity)
-            .padding(.vertical, 8)
+            .padding(.vertical, theme.spacingS)
             .background(
-                isSelected ?
-                    Color.blue.opacity(0.1) :
-                    Color.clear
+                isSelected ? theme.accent.opacity(0.12) : Color.clear
             )
-            .clipShape(RoundedRectangle(cornerRadius: 8))
+            .clipShape(RoundedRectangle(cornerRadius: theme.radiusSmall, style: .continuous))
         }
         .buttonStyle(.plain)
     }
@@ -535,18 +510,20 @@ struct PrivateChatHeader: View {
     var onVoiceCall: (() -> Void)?
     var onVideoCall: (() -> Void)?
 
+    @ObservedObject private var design = PoolDesign.shared
+    @Environment(\.colorScheme) private var scheme
+
     private var avatarColor: Color {
-        let colors: [Color] = [.blue, .green, .orange, .purple, .pink, .cyan, .yellow, .red]
-        return colors[peer.avatarColorIndex % colors.count]
+        PoolUserProfile.availableColors[peer.avatarColorIndex % PoolUserProfile.availableColors.count]
     }
 
     var body: some View {
-        HStack(spacing: 12) {
+        let theme = design.snapshot(dark: scheme == .dark)
+        HStack(spacing: theme.spacingM) {
             // Back button
             Button(action: onBack) {
-                Image(systemName: "chevron.left")
-                    .font(.system(size: 16, weight: .semibold))
-                    .foregroundStyle(.blue)
+                PoolIcon("chevron-left", size: 16, systemFallback: "chevron.left")
+                    .foregroundColor(theme.accent)
             }
 
             // Avatar
@@ -557,17 +534,17 @@ struct PrivateChatHeader: View {
                     .overlay(
                         Text(String(peer.effectiveDisplayName.prefix(1)).uppercased())
                             .font(.system(size: 14, weight: .semibold))
-                            .foregroundStyle(.white)
+                            .foregroundColor(theme.textOnAccent)
                     )
 
                 // Online indicator
                 if isOnline {
                     Circle()
-                        .fill(Color.green)
+                        .fill(theme.success)
                         .frame(width: 10, height: 10)
                         .overlay(
                             Circle()
-                                .strokeBorder(Color.secondarySystemGroupedBackgroundColor, lineWidth: 2)
+                                .strokeBorder(theme.surface, lineWidth: 2)
                         )
                         .offset(x: 2, y: 2)
                 }
@@ -577,30 +554,31 @@ struct PrivateChatHeader: View {
             VStack(alignment: .leading, spacing: 2) {
                 Text(peer.effectiveDisplayName)
                     .font(.system(size: 15, weight: .semibold))
+                    .foregroundColor(theme.textPrimary)
 
-                Text(isOnline ? "Online" : "Offline")
+                Text(isOnline
+                     ? poolString("poolchat.status.onlineSingle", fallback: "Online")
+                     : poolString("poolchat.status.offline", fallback: "Offline"))
                     .font(.system(size: 12))
-                    .foregroundStyle(isOnline ? .green : .secondary)
+                    .foregroundColor(isOnline ? theme.success : theme.textSecondary)
             }
 
             Spacer()
 
             // Call buttons (only shown when peer is online)
             if isOnline {
-                HStack(spacing: 12) {
+                HStack(spacing: theme.spacingM) {
                     if let onVoiceCall {
                         Button(action: onVoiceCall) {
-                            Image(systemName: "phone.fill")
-                                .font(.system(size: 15))
-                                .foregroundStyle(.blue)
+                            PoolIcon("phone", size: 15, systemFallback: "phone.fill")
+                                .foregroundColor(theme.accent)
                         }
                         .buttonStyle(.plain)
                     }
                     if let onVideoCall {
                         Button(action: onVideoCall) {
-                            Image(systemName: "video.fill")
-                                .font(.system(size: 15))
-                                .foregroundStyle(.blue)
+                            PoolIcon("video", size: 15, systemFallback: "video.fill")
+                                .foregroundColor(theme.accent)
                         }
                         .buttonStyle(.plain)
                     }
@@ -608,21 +586,20 @@ struct PrivateChatHeader: View {
             }
 
             // Encryption indicator
-            HStack(spacing: 4) {
-                Image(systemName: "lock.fill")
-                    .font(.system(size: 10))
-                Text("Encrypted")
+            HStack(spacing: theme.spacingXS) {
+                PoolIcon("lock", size: 10, systemFallback: "lock.fill")
+                PoolText("poolchat.encrypted", fallback: "Encrypted")
                     .font(.system(size: 10))
             }
-            .foregroundStyle(.green)
-            .padding(.horizontal, 8)
-            .padding(.vertical, 4)
-            .background(Color.green.opacity(0.15))
+            .foregroundColor(theme.success)
+            .padding(.horizontal, theme.spacingS)
+            .padding(.vertical, theme.spacingXS)
+            .background(theme.success.opacity(0.15))
             .clipShape(Capsule())
         }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 10)
-        .background(Color.secondarySystemGroupedBackgroundColor)
+        .padding(.horizontal, theme.spacingM)
+        .padding(.vertical, theme.spacingS + 2)
+        .background(theme.surface)
     }
 }
 
@@ -655,7 +632,7 @@ struct PrivateChatListView: View {
             LazyVStack(spacing: 0) {
                 // Online members section (peers without existing chats)
                 if !newPeers.isEmpty {
-                    SectionHeader(title: "Start New Chat")
+                    SectionHeader(titleKey: "poolchat.private.startNew", titleFallback: "Start New Chat")
 
                     ForEach(newPeers, id: \.id) { peer in
                         NewChatPeerRow(peer: peer, onTap: { onSelectPeer(peer) })
@@ -665,7 +642,7 @@ struct PrivateChatListView: View {
 
                 // Existing chats section
                 if !chatInfos.isEmpty {
-                    SectionHeader(title: "Recent Chats")
+                    SectionHeader(titleKey: "poolchat.private.recent", titleFallback: "Recent Chats")
 
                     ForEach(chatInfos) { info in
                         PrivateChatRow(info: info, onTap: { onSelectChat(info) })
@@ -686,19 +663,24 @@ struct PrivateChatListView: View {
 }
 
 struct SectionHeader: View {
-    let title: String
+    let titleKey: String
+    let titleFallback: String
+
+    @ObservedObject private var design = PoolDesign.shared
+    @Environment(\.colorScheme) private var scheme
 
     var body: some View {
+        let theme = design.snapshot(dark: scheme == .dark)
         HStack {
-            Text(title)
+            PoolText(titleKey, fallback: titleFallback)
                 .font(.system(size: 13, weight: .semibold))
-                .foregroundStyle(.secondary)
+                .foregroundColor(theme.textSecondary)
                 .textCase(.uppercase)
             Spacer()
         }
-        .padding(.horizontal, 16)
-        .padding(.top, 16)
-        .padding(.bottom, 8)
+        .padding(.horizontal, theme.spacingL)
+        .padding(.top, theme.spacingL)
+        .padding(.bottom, theme.spacingS)
     }
 }
 
@@ -706,14 +688,17 @@ struct NewChatPeerRow: View {
     let peer: Peer
     let onTap: () -> Void
 
+    @ObservedObject private var design = PoolDesign.shared
+    @Environment(\.colorScheme) private var scheme
+
     private var avatarColor: Color {
-        let colors: [Color] = [.blue, .green, .orange, .purple, .pink, .cyan, .yellow, .red]
-        return colors[peer.avatarColorIndex % colors.count]
+        PoolUserProfile.availableColors[peer.avatarColorIndex % PoolUserProfile.availableColors.count]
     }
 
     var body: some View {
+        let theme = design.snapshot(dark: scheme == .dark)
         Button(action: onTap) {
-            HStack(spacing: 14) {
+            HStack(spacing: theme.spacingL) {
                 // Avatar with online indicator
                 ZStack(alignment: .bottomTrailing) {
                     Circle()
@@ -722,37 +707,36 @@ struct NewChatPeerRow: View {
                         .overlay(
                             Text(String(peer.effectiveDisplayName.prefix(1)).uppercased())
                                 .font(.system(size: 18, weight: .semibold))
-                                .foregroundStyle(.white)
+                                .foregroundColor(theme.textOnAccent)
                         )
 
                     Circle()
-                        .fill(Color.green)
+                        .fill(theme.success)
                         .frame(width: 14, height: 14)
                         .overlay(
                             Circle()
-                                .strokeBorder(poolGroupedBackgroundColor, lineWidth: 2)
+                                .strokeBorder(theme.background, lineWidth: 2)
                         )
                         .offset(x: 2, y: 2)
                 }
 
-                VStack(alignment: .leading, spacing: 4) {
+                VStack(alignment: .leading, spacing: theme.spacingXS) {
                     Text(peer.effectiveDisplayName)
                         .font(.system(size: 16, weight: .medium))
-                        .foregroundStyle(.primary)
+                        .foregroundColor(theme.textPrimary)
 
-                    Text("Online")
+                    PoolText("poolchat.status.onlineSingle", fallback: "Online")
                         .font(.system(size: 13))
-                        .foregroundStyle(.green)
+                        .foregroundColor(theme.success)
                 }
 
                 Spacer()
 
-                Image(systemName: "chevron.right")
-                    .font(.system(size: 14))
-                    .foregroundStyle(.tertiary)
+                PoolIcon("chevron-right", size: 14, systemFallback: "chevron.right")
+                    .foregroundColor(theme.textTertiary)
             }
-            .padding(.horizontal, 16)
-            .padding(.vertical, 10)
+            .padding(.horizontal, theme.spacingL)
+            .padding(.vertical, theme.spacingS + 2)
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
@@ -763,14 +747,17 @@ struct PrivateChatRow: View {
     let info: PrivateChatInfo
     let onTap: () -> Void
 
+    @ObservedObject private var design = PoolDesign.shared
+    @Environment(\.colorScheme) private var scheme
+
     private var avatarColor: Color {
-        let colors: [Color] = [.blue, .green, .orange, .purple, .pink, .cyan, .yellow, .red]
-        return colors[info.avatarColorIndex % colors.count]
+        PoolUserProfile.availableColors[info.avatarColorIndex % PoolUserProfile.availableColors.count]
     }
 
     var body: some View {
+        let theme = design.snapshot(dark: scheme == .dark)
         Button(action: onTap) {
-            HStack(spacing: 14) {
+            HStack(spacing: theme.spacingL) {
                 // Avatar
                 ZStack(alignment: .bottomTrailing) {
                     Circle()
@@ -779,33 +766,33 @@ struct PrivateChatRow: View {
                         .overlay(
                             Text(String(info.peerName.prefix(1)).uppercased())
                                 .font(.system(size: 18, weight: .semibold))
-                                .foregroundStyle(.white)
+                                .foregroundColor(theme.textOnAccent)
                         )
 
                     if info.isOnline {
                         Circle()
-                            .fill(Color.green)
+                            .fill(theme.success)
                             .frame(width: 14, height: 14)
                             .overlay(
                                 Circle()
-                                    .strokeBorder(poolGroupedBackgroundColor, lineWidth: 2)
+                                    .strokeBorder(theme.background, lineWidth: 2)
                             )
                             .offset(x: 2, y: 2)
                     }
                 }
 
-                VStack(alignment: .leading, spacing: 4) {
+                VStack(alignment: .leading, spacing: theme.spacingXS) {
                     HStack {
                         Text(info.peerName)
                             .font(.system(size: 16, weight: .medium))
-                            .foregroundStyle(.primary)
+                            .foregroundColor(theme.textPrimary)
 
                         Spacer()
 
                         if let time = info.lastMessageTime {
                             Text(formatTime(time))
                                 .font(.system(size: 12))
-                                .foregroundStyle(.secondary)
+                                .foregroundColor(theme.textSecondary)
                         }
                     }
 
@@ -813,7 +800,7 @@ struct PrivateChatRow: View {
                         if let lastMessage = info.lastMessage {
                             Text(lastMessage)
                                 .font(.system(size: 14))
-                                .foregroundStyle(.secondary)
+                                .foregroundColor(theme.textSecondary)
                                 .lineLimit(1)
                         }
 
@@ -822,16 +809,16 @@ struct PrivateChatRow: View {
                         if info.unreadCount > 0 {
                             Text("\(info.unreadCount)")
                                 .font(.system(size: 12, weight: .bold))
-                                .foregroundStyle(.white)
+                                .foregroundColor(theme.textOnAccent)
                                 .padding(.horizontal, 7)
                                 .padding(.vertical, 3)
-                                .background(Capsule().fill(Color.blue))
+                                .background(Capsule().fill(theme.accent))
                         }
                     }
                 }
             }
-            .padding(.horizontal, 16)
-            .padding(.vertical, 10)
+            .padding(.horizontal, theme.spacingL)
+            .padding(.vertical, theme.spacingS + 2)
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
@@ -842,7 +829,7 @@ struct PrivateChatRow: View {
         if calendar.isDateInToday(date) {
             return date.formatted(date: .omitted, time: .shortened)
         } else if calendar.isDateInYesterday(date) {
-            return "Yesterday"
+            return poolString("poolchat.time.yesterday", fallback: "Yesterday")
         } else {
             return date.formatted(date: .abbreviated, time: .omitted)
         }
@@ -850,27 +837,31 @@ struct PrivateChatRow: View {
 }
 
 struct PrivateChatEmptyView: View {
+    @ObservedObject private var design = PoolDesign.shared
+    @Environment(\.colorScheme) private var scheme
+
     var body: some View {
-        VStack(spacing: 16) {
+        let theme = design.snapshot(dark: scheme == .dark)
+        VStack(spacing: theme.spacingL) {
             Spacer()
 
-            Image(systemName: "person.2.fill")
-                .font(.system(size: 48))
-                .foregroundStyle(.tertiary)
+            PoolIcon("user-group", size: 46, systemFallback: "person.2.fill")
+                .foregroundColor(theme.textTertiary)
 
-            Text("No Private Chats")
-                .font(.headline)
-                .foregroundStyle(.secondary)
+            PoolText("poolchat.private.emptyTitle", fallback: "No Private Chats")
+                .font(theme.fontHeading)
+                .foregroundColor(theme.textSecondary)
 
-            Text("Start a private conversation\nwith a connected pool member")
-                .font(.subheadline)
-                .foregroundStyle(.tertiary)
+            PoolText("poolchat.private.emptyMessage", fallback: "Start a private conversation with a connected pool member")
+                .font(theme.fontBody)
+                .foregroundColor(theme.textTertiary)
                 .multilineTextAlignment(.center)
 
             Spacer()
         }
         .frame(maxWidth: .infinity)
         .padding(.vertical, 60)
+        .background(theme.background)
     }
 }
 
@@ -890,7 +881,7 @@ struct GroupChatListView: View {
                 } else {
                     // Current/connected group section
                     if let currentGroup = groupInfos.first(where: { $0.id == currentHostPeerID }) {
-                        SectionHeader(title: "Current Group")
+                        SectionHeader(titleKey: "poolchat.group.current", titleFallback: "Current Group")
 
                         GroupChatRow(
                             info: currentGroup,
@@ -903,7 +894,7 @@ struct GroupChatListView: View {
                     // Past groups section
                     let pastGroups = groupInfos.filter { $0.id != currentHostPeerID }
                     if !pastGroups.isEmpty {
-                        SectionHeader(title: "Past Groups")
+                        SectionHeader(titleKey: "poolchat.group.past", titleFallback: "Past Groups")
 
                         ForEach(pastGroups) { group in
                             GroupChatRow(
@@ -915,7 +906,7 @@ struct GroupChatListView: View {
                                 Button(role: .destructive) {
                                     onDeleteGroup(group)
                                 } label: {
-                                    Label("Delete", systemImage: "trash")
+                                    poolMenuLabel("common.delete", fallback: "Delete", icon: "trash", systemFallback: "trash")
                                 }
                             }
 
@@ -936,14 +927,17 @@ struct GroupChatRow: View {
     let isCurrentGroup: Bool
     let onTap: () -> Void
 
+    @ObservedObject private var design = PoolDesign.shared
+    @Environment(\.colorScheme) private var scheme
+
     private var avatarColor: Color {
-        let colors: [Color] = [.blue, .green, .orange, .purple, .pink, .cyan, .yellow, .red]
-        return colors[info.avatarColorIndex % colors.count]
+        PoolUserProfile.availableColors[info.avatarColorIndex % PoolUserProfile.availableColors.count]
     }
 
     var body: some View {
+        let theme = design.snapshot(dark: scheme == .dark)
         Button(action: onTap) {
-            HStack(spacing: 14) {
+            HStack(spacing: theme.spacingL) {
                 // Group Avatar
                 ZStack(alignment: .bottomTrailing) {
                     Circle()
@@ -955,9 +949,8 @@ struct GroupChatRow: View {
                                     Text(emoji)
                                         .font(.system(size: 22))
                                 } else {
-                                    Image(systemName: "person.3.fill")
-                                        .font(.system(size: 18))
-                                        .foregroundStyle(.white)
+                                    PoolIcon("users", size: 18, systemFallback: "person.3.fill")
+                                        .foregroundColor(theme.textOnAccent)
                                 }
                             }
                         )
@@ -965,29 +958,29 @@ struct GroupChatRow: View {
                     // Online indicator for current group
                     if info.isHostConnected {
                         Circle()
-                            .fill(Color.green)
+                            .fill(theme.success)
                             .frame(width: 14, height: 14)
                             .overlay(
                                 Circle()
-                                    .strokeBorder(poolGroupedBackgroundColor, lineWidth: 2)
+                                    .strokeBorder(theme.background, lineWidth: 2)
                             )
                             .offset(x: 2, y: 2)
                     }
                 }
 
-                VStack(alignment: .leading, spacing: 4) {
+                VStack(alignment: .leading, spacing: theme.spacingXS) {
                     HStack {
                         Text(info.hostDisplayName)
                             .font(.system(size: 16, weight: .medium))
-                            .foregroundStyle(.primary)
+                            .foregroundColor(theme.textPrimary)
 
                         if isCurrentGroup {
-                            Text("CONNECTED")
+                            PoolText("poolchat.group.connected", fallback: "CONNECTED")
                                 .font(.system(size: 9, weight: .bold))
-                                .foregroundStyle(.white)
+                                .foregroundColor(theme.textOnAccent)
                                 .padding(.horizontal, 6)
                                 .padding(.vertical, 2)
-                                .background(Capsule().fill(Color.green))
+                                .background(Capsule().fill(theme.success))
                         }
 
                         Spacer()
@@ -995,7 +988,7 @@ struct GroupChatRow: View {
                         if let time = info.lastMessageTime {
                             Text(formatTime(time))
                                 .font(.system(size: 12))
-                                .foregroundStyle(.secondary)
+                                .foregroundColor(theme.textSecondary)
                         }
                     }
 
@@ -1003,17 +996,17 @@ struct GroupChatRow: View {
                         if let lastMessage = info.lastMessage {
                             Text(lastMessage)
                                 .font(.system(size: 14))
-                                .foregroundStyle(.secondary)
+                                .foregroundColor(theme.textSecondary)
                                 .lineLimit(1)
                         } else if !info.isHostConnected {
-                            Text("Host not connected")
+                            PoolText("poolchat.group.hostNotConnected", fallback: "Host not connected")
                                 .font(.system(size: 14))
-                                .foregroundStyle(.tertiary)
+                                .foregroundColor(theme.textTertiary)
                                 .italic()
                         } else {
-                            Text("No messages yet")
+                            PoolText("poolchat.group.noMessages", fallback: "No messages yet")
                                 .font(.system(size: 14))
-                                .foregroundStyle(.tertiary)
+                                .foregroundColor(theme.textTertiary)
                         }
 
                         Spacer()
@@ -1021,16 +1014,16 @@ struct GroupChatRow: View {
                         if info.unreadCount > 0 {
                             Text("\(info.unreadCount)")
                                 .font(.system(size: 12, weight: .bold))
-                                .foregroundStyle(.white)
+                                .foregroundColor(theme.textOnAccent)
                                 .padding(.horizontal, 7)
                                 .padding(.vertical, 3)
-                                .background(Capsule().fill(Color.blue))
+                                .background(Capsule().fill(theme.accent))
                         }
                     }
                 }
             }
-            .padding(.horizontal, 16)
-            .padding(.vertical, 10)
+            .padding(.horizontal, theme.spacingL)
+            .padding(.vertical, theme.spacingS + 2)
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
@@ -1041,7 +1034,7 @@ struct GroupChatRow: View {
         if calendar.isDateInToday(date) {
             return date.formatted(date: .omitted, time: .shortened)
         } else if calendar.isDateInYesterday(date) {
-            return "Yesterday"
+            return poolString("poolchat.time.yesterday", fallback: "Yesterday")
         } else {
             return date.formatted(date: .abbreviated, time: .omitted)
         }
@@ -1049,27 +1042,31 @@ struct GroupChatRow: View {
 }
 
 struct GroupChatEmptyView: View {
+    @ObservedObject private var design = PoolDesign.shared
+    @Environment(\.colorScheme) private var scheme
+
     var body: some View {
-        VStack(spacing: 16) {
+        let theme = design.snapshot(dark: scheme == .dark)
+        VStack(spacing: theme.spacingL) {
             Spacer()
 
-            Image(systemName: "person.3.fill")
-                .font(.system(size: 48))
-                .foregroundStyle(.tertiary)
+            PoolIcon("users", size: 46, systemFallback: "person.3.fill")
+                .foregroundColor(theme.textTertiary)
 
-            Text("No Group Chats")
-                .font(.headline)
-                .foregroundStyle(.secondary)
+            PoolText("poolchat.group.emptyTitle", fallback: "No Group Chats")
+                .font(theme.fontHeading)
+                .foregroundColor(theme.textSecondary)
 
-            Text("Join or host a Connection Pool\nto start a group chat")
-                .font(.subheadline)
-                .foregroundStyle(.tertiary)
+            PoolText("poolchat.group.emptyMessage", fallback: "Join or host a Connection Pool to start a group chat")
+                .font(theme.fontBody)
+                .foregroundColor(theme.textTertiary)
                 .multilineTextAlignment(.center)
 
             Spacer()
         }
         .frame(maxWidth: .infinity)
         .padding(.vertical, 60)
+        .background(theme.background)
     }
 }
 
@@ -1079,18 +1076,20 @@ struct GroupChatHeader: View {
     let group: GroupChatInfo
     let onBack: () -> Void
 
+    @ObservedObject private var design = PoolDesign.shared
+    @Environment(\.colorScheme) private var scheme
+
     private var avatarColor: Color {
-        let colors: [Color] = [.blue, .green, .orange, .purple, .pink, .cyan, .yellow, .red]
-        return colors[group.avatarColorIndex % colors.count]
+        PoolUserProfile.availableColors[group.avatarColorIndex % PoolUserProfile.availableColors.count]
     }
 
     var body: some View {
-        HStack(spacing: 12) {
+        let theme = design.snapshot(dark: scheme == .dark)
+        HStack(spacing: theme.spacingM) {
             // Back button
             Button(action: onBack) {
-                Image(systemName: "chevron.left")
-                    .font(.system(size: 16, weight: .semibold))
-                    .foregroundStyle(.blue)
+                PoolIcon("chevron-left", size: 16, systemFallback: "chevron.left")
+                    .foregroundColor(theme.accent)
             }
 
             // Avatar
@@ -1104,9 +1103,8 @@ struct GroupChatHeader: View {
                                 Text(emoji)
                                     .font(.system(size: 16))
                             } else {
-                                Image(systemName: "person.3.fill")
-                                    .font(.system(size: 14))
-                                    .foregroundStyle(.white)
+                                PoolIcon("users", size: 14, systemFallback: "person.3.fill")
+                                    .foregroundColor(theme.textOnAccent)
                             }
                         }
                     )
@@ -1114,11 +1112,11 @@ struct GroupChatHeader: View {
                 // Online indicator
                 if group.isHostConnected {
                     Circle()
-                        .fill(Color.green)
+                        .fill(theme.success)
                         .frame(width: 10, height: 10)
                         .overlay(
                             Circle()
-                                .strokeBorder(Color.secondarySystemGroupedBackgroundColor, lineWidth: 2)
+                                .strokeBorder(theme.surface, lineWidth: 2)
                         )
                         .offset(x: 2, y: 2)
                 }
@@ -1128,147 +1126,170 @@ struct GroupChatHeader: View {
             VStack(alignment: .leading, spacing: 2) {
                 Text(group.hostDisplayName)
                     .font(.system(size: 15, weight: .semibold))
+                    .foregroundColor(theme.textPrimary)
 
-                Text(group.isHostConnected ? "Connected" : "Host not connected")
+                Text(group.isHostConnected
+                     ? poolString("poolchat.status.connected", fallback: "Connected")
+                     : poolString("poolchat.group.hostNotConnected", fallback: "Host not connected"))
                     .font(.system(size: 12))
-                    .foregroundStyle(group.isHostConnected ? .green : .secondary)
+                    .foregroundColor(group.isHostConnected ? theme.success : theme.textSecondary)
             }
 
             Spacer()
 
             // Encryption indicator
-            HStack(spacing: 4) {
-                Image(systemName: "lock.fill")
-                    .font(.system(size: 10))
-                Text("Encrypted")
+            HStack(spacing: theme.spacingXS) {
+                PoolIcon("lock", size: 10, systemFallback: "lock.fill")
+                PoolText("poolchat.encrypted", fallback: "Encrypted")
                     .font(.system(size: 10))
             }
-            .foregroundStyle(.green)
-            .padding(.horizontal, 8)
-            .padding(.vertical, 4)
-            .background(Color.green.opacity(0.15))
+            .foregroundColor(theme.success)
+            .padding(.horizontal, theme.spacingS)
+            .padding(.vertical, theme.spacingXS)
+            .background(theme.success.opacity(0.15))
             .clipShape(Capsule())
         }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 10)
-        .background(Color.secondarySystemGroupedBackgroundColor)
+        .padding(.horizontal, theme.spacingM)
+        .padding(.vertical, theme.spacingS + 2)
+        .background(theme.surface)
     }
 }
 
 // MARK: - Not Connected View
 
 struct NotConnectedView: View {
+    @ObservedObject private var design = PoolDesign.shared
+    @Environment(\.colorScheme) private var scheme
+
     var body: some View {
-        VStack(spacing: 24) {
+        let theme = design.snapshot(dark: scheme == .dark)
+        VStack(spacing: theme.spacingXL) {
             Spacer()
 
             // Icon
             ZStack {
                 Circle()
-                    .fill(
-                        LinearGradient(
-                            colors: [.cyan, .blue],
-                            startPoint: .topLeading,
-                            endPoint: .bottomTrailing
-                        )
-                    )
+                    .fill(theme.accent.opacity(0.15))
                     .frame(width: 80, height: 80)
 
-                Image(systemName: "bubble.left.and.bubble.right.fill")
-                    .font(.system(size: 36))
-                    .foregroundStyle(.white)
+                PoolIcon("comments", size: 36, systemFallback: "bubble.left.and.bubble.right.fill")
+                    .foregroundColor(theme.accent)
             }
 
-            VStack(spacing: 8) {
-                Text("Not Connected")
-                    .font(.title2.bold())
+            VStack(spacing: theme.spacingS) {
+                PoolText("poolchat.notConnected.title", fallback: "Not Connected")
+                    .font(theme.fontHeading)
+                    .foregroundColor(theme.textPrimary)
 
-                Text("Join or host a Connection Pool\nto start chatting")
-                    .font(.subheadline)
-                    .foregroundStyle(.secondary)
+                PoolText("poolchat.notConnected.subtitle", fallback: "Join or host a Connection Pool to start chatting")
+                    .font(theme.fontBody)
+                    .foregroundColor(theme.textSecondary)
                     .multilineTextAlignment(.center)
             }
 
             // Instructions card
             VStack(spacing: 0) {
                 InstructionRow(
-                    icon: "antenna.radiowaves.left.and.right",
-                    iconColor: .blue,
-                    title: "Open Connection Pool",
-                    description: "Launch the Connection Pool app",
+                    icon: "tower-broadcast",
+                    systemFallback: "antenna.radiowaves.left.and.right",
+                    tint: theme.accent,
+                    titleKey: "poolchat.notConnected.step1Title",
+                    titleFallback: "Open Connection Pool",
+                    descKey: "poolchat.notConnected.step1Desc",
+                    descFallback: "Launch the Connection Pool app",
                     showDivider: true
                 )
 
                 InstructionRow(
-                    icon: "person.2.fill",
-                    iconColor: .green,
-                    title: "Host or Join",
-                    description: "Create a pool or join an existing one",
+                    icon: "user-group",
+                    systemFallback: "person.2.fill",
+                    tint: theme.success,
+                    titleKey: "poolchat.notConnected.step2Title",
+                    titleFallback: "Host or Join",
+                    descKey: "poolchat.notConnected.step2Desc",
+                    descFallback: "Create a pool or join an existing one",
                     showDivider: true
                 )
 
                 InstructionRow(
-                    icon: "message.fill",
-                    iconColor: .cyan,
-                    title: "Start Chatting",
-                    description: "Send messages, photos, and voice notes",
+                    icon: "message",
+                    systemFallback: "message.fill",
+                    tint: theme.info,
+                    titleKey: "poolchat.notConnected.step3Title",
+                    titleFallback: "Start Chatting",
+                    descKey: "poolchat.notConnected.step3Desc",
+                    descFallback: "Send messages, photos, and voice notes",
                     showDivider: false
                 )
             }
-            .background(Color.secondarySystemGroupedBackgroundColor)
-            .clipShape(RoundedRectangle(cornerRadius: 12))
-            .padding(.horizontal, 20)
+            .background(theme.surface)
+            .clipShape(RoundedRectangle(cornerRadius: theme.radiusLarge, style: .continuous))
+            .overlay(
+                RoundedRectangle(cornerRadius: theme.radiusLarge, style: .continuous)
+                    .strokeBorder(theme.border, lineWidth: 1)
+            )
+            .padding(.horizontal, theme.spacingL)
 
             Spacer()
 
             // Security hint
-            HStack(spacing: 6) {
-                Image(systemName: "lock.shield.fill")
-                    .font(.system(size: 12))
-                    .foregroundStyle(.green)
+            HStack(spacing: theme.spacingXS + 2) {
+                PoolIcon("shield-halved", size: 12, systemFallback: "lock.shield.fill")
+                    .foregroundColor(theme.success)
 
-                Text("End-to-end encrypted")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+                PoolText("poolchat.notConnected.encrypted", fallback: "End-to-end encrypted")
+                    .font(theme.fontCaption)
+                    .foregroundColor(theme.textSecondary)
             }
-            .padding(.bottom, 8)
+            .padding(.bottom, theme.spacingS)
         }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(theme.background)
     }
 }
 
 struct InstructionRow: View {
     let icon: String
-    let iconColor: Color
-    let title: String
-    let description: String
+    let systemFallback: String
+    let tint: Color
+    let titleKey: String
+    let titleFallback: String
+    let descKey: String
+    let descFallback: String
     let showDivider: Bool
 
+    @ObservedObject private var design = PoolDesign.shared
+    @Environment(\.colorScheme) private var scheme
+
     var body: some View {
+        let theme = design.snapshot(dark: scheme == .dark)
         VStack(spacing: 0) {
-            HStack(spacing: 14) {
-                Image(systemName: icon)
-                    .font(.system(size: 18))
-                    .foregroundStyle(.white)
+            HStack(spacing: theme.spacingM) {
+                PoolIcon(icon, size: 18, systemFallback: systemFallback)
+                    .foregroundColor(tint)
                     .frame(width: 36, height: 36)
-                    .background(iconColor)
-                    .clipShape(RoundedRectangle(cornerRadius: 8))
+                    .background(tint.opacity(0.15))
+                    .clipShape(RoundedRectangle(cornerRadius: theme.radiusSmall, style: .continuous))
 
                 VStack(alignment: .leading, spacing: 2) {
-                    Text(title)
-                        .font(.subheadline.weight(.semibold))
+                    PoolText(titleKey, fallback: titleFallback)
+                        .font(theme.fontBody.weight(.semibold))
+                        .foregroundColor(theme.textPrimary)
 
-                    Text(description)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
+                    PoolText(descKey, fallback: descFallback)
+                        .font(theme.fontCaption)
+                        .foregroundColor(theme.textSecondary)
                 }
 
                 Spacer()
             }
-            .padding(.horizontal, 16)
-            .padding(.vertical, 12)
+            .padding(.horizontal, theme.spacingL)
+            .padding(.vertical, theme.spacingM)
 
             if showDivider {
-                Divider()
+                Rectangle()
+                    .fill(theme.separator)
+                    .frame(height: 1)
                     .padding(.leading, 66)
             }
         }
@@ -1285,16 +1306,20 @@ struct ConnectionStatusBar: View {
     var onGroupVoiceCall: (() -> Void)?
     var onGroupVideoCall: (() -> Void)?
 
+    @ObservedObject private var design = PoolDesign.shared
+    @Environment(\.colorScheme) private var scheme
+
     var body: some View {
-        HStack(spacing: 8) {
+        let theme = design.snapshot(dark: scheme == .dark)
+        HStack(spacing: theme.spacingS) {
             // Status indicator
             Circle()
-                .fill(isConnected ? Color.green : Color.orange)
+                .fill(isConnected ? theme.success : theme.warning)
                 .frame(width: 8, height: 8)
 
             Text(connectionStatus)
-                .font(.system(size: 12, weight: .medium))
-                .foregroundStyle(isConnected ? Color.secondary : Color.orange)
+                .font(theme.fontCaption)
+                .foregroundColor(isConnected ? theme.textSecondary : theme.warning)
 
             Spacer()
 
@@ -1303,55 +1328,55 @@ struct ConnectionStatusBar: View {
                 HStack(spacing: -6) {
                     ForEach(Array(connectedPeers.prefix(3).enumerated()), id: \.element.id) { index, peer in
                         Circle()
-                            .fill(avatarColor(for: peer.avatarColorIndex))
+                            .fill(avatarColor(for: peer.avatarColorIndex, theme: theme))
                             .frame(width: 22, height: 22)
                             .overlay(
                                 Text(String(peer.effectiveDisplayName.prefix(1)).uppercased())
                                     .font(.system(size: 9, weight: .semibold))
-                                    .foregroundStyle(.white)
+                                    .foregroundColor(theme.textOnAccent)
                             )
                             .overlay(
                                 Circle()
-                                    .strokeBorder(Color.secondarySystemGroupedBackgroundColor, lineWidth: 1.5)
+                                    .strokeBorder(theme.surface, lineWidth: 1.5)
                             )
                             .zIndex(Double(3 - index))
                     }
                     if connectedPeers.count > 3 {
                         Circle()
-                            .fill(Color.gray)
+                            .fill(theme.textTertiary)
                             .frame(width: 22, height: 22)
                             .overlay(
                                 Text("+\(connectedPeers.count - 3)")
                                     .font(.system(size: 8, weight: .semibold))
-                                    .foregroundStyle(.white)
+                                    .foregroundColor(theme.textOnAccent)
                             )
                             .overlay(
                                 Circle()
-                                    .strokeBorder(Color.secondarySystemGroupedBackgroundColor, lineWidth: 1.5)
+                                    .strokeBorder(theme.surface, lineWidth: 1.5)
                             )
                     }
                 }
 
-                Text("\(connectedPeers.count) online")
-                    .font(.system(size: 11))
-                    .foregroundStyle(.secondary)
+                Text(poolString("poolchat.status.online", fallback: "\(connectedPeers.count) online", args: ["count": "\(connectedPeers.count)"]))
+                    .font(theme.fontCaption)
+                    .foregroundColor(theme.textSecondary)
 
                 // Group call buttons
                 if let onGroupVoiceCall {
                     Button(action: onGroupVoiceCall) {
-                        Image(systemName: "phone.fill")
-                            .font(.system(size: 14))
-                            .foregroundStyle(.blue)
+                        PoolIcon("phone", size: 14, systemFallback: "phone.fill")
+                            .foregroundColor(theme.accent)
                     }
                     .buttonStyle(.plain)
+                    .accessibilityLabel(poolString("poolchat.call.groupVoice", fallback: "Start group voice call"))
                 }
                 if let onGroupVideoCall {
                     Button(action: onGroupVideoCall) {
-                        Image(systemName: "video.fill")
-                            .font(.system(size: 14))
-                            .foregroundStyle(.blue)
+                        PoolIcon("video", size: 14, systemFallback: "video.fill")
+                            .foregroundColor(theme.accent)
                     }
                     .buttonStyle(.plain)
+                    .accessibilityLabel(poolString("poolchat.call.groupVideo", fallback: "Start group video call"))
                 }
             }
 
@@ -1361,34 +1386,40 @@ struct ConnectionStatusBar: View {
                     Button(role: .destructive) {
                         onClearHistory()
                     } label: {
-                        Label(
-                            isHost ? "Clear History for All" : "Clear My View",
-                            systemImage: "trash"
+                        poolMenuLabel(
+                            isHost ? "poolchat.status.clearForAll" : "poolchat.status.clearMyView",
+                            fallback: isHost ? "Clear History for All" : "Clear My View",
+                            icon: "trash",
+                            systemFallback: "trash"
                         )
                     }
                 } label: {
-                    Image(systemName: "ellipsis.circle")
-                        .font(.system(size: 18))
-                        .foregroundStyle(.secondary)
+                    PoolIcon("ellipsis", size: 18, systemFallback: "ellipsis.circle")
+                        .foregroundColor(theme.textSecondary)
                 }
+                .accessibilityLabel(poolString("common.more", fallback: "More"))
             }
         }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 6)
-        .background(Color.secondarySystemGroupedBackgroundColor)
+        .padding(.horizontal, theme.spacingM)
+        .padding(.vertical, theme.spacingXS + 2)
+        .background(theme.surface)
     }
 
     private var connectionStatus: String {
         if !isConnected {
-            return "Not connected to pool"
+            return poolString("poolchat.status.notConnected", fallback: "Not connected to pool")
         }
         // When isConnected is true, the user can send and receive messages
         // Show "Connected" status since chat functionality is working
-        return "Connected"
+        return poolString("poolchat.status.connected", fallback: "Connected")
     }
 
-    private func avatarColor(for index: Int) -> Color {
-        let colors: [Color] = [.blue, .green, .orange, .purple, .pink, .cyan, .yellow, .red]
+    private func avatarColor(for index: Int, theme: PoolThemeSnapshot) -> Color {
+        // Themed avatar palette (no purple); indexed by the peer's stable avatar index.
+        let colors: [Color] = [
+            theme.accent, theme.success, theme.warning,
+            theme.info, theme.privacyAccent, theme.danger
+        ]
         return colors[index % colors.count]
     }
 }
@@ -1525,21 +1556,24 @@ private struct ViewportHeightKey: PreferenceKey {
 // MARK: - Empty Messages View
 
 struct EmptyMessagesView: View {
+    @ObservedObject private var design = PoolDesign.shared
+    @Environment(\.colorScheme) private var scheme
+
     var body: some View {
-        VStack(spacing: 16) {
+        let theme = design.snapshot(dark: scheme == .dark)
+        VStack(spacing: theme.spacingL) {
             Spacer()
 
-            Image(systemName: "text.bubble")
-                .font(.system(size: 44))
-                .foregroundStyle(.tertiary)
+            PoolIcon("message", size: 46, systemFallback: "text.bubble")
+                .foregroundColor(theme.textTertiary)
 
-            Text("No messages yet")
-                .font(.headline)
-                .foregroundStyle(.secondary)
+            PoolText("poolchat.messages.emptyTitle", fallback: "No messages yet")
+                .font(theme.fontHeading)
+                .foregroundColor(theme.textSecondary)
 
-            Text("Be the first to say hello!")
-                .font(.subheadline)
-                .foregroundStyle(.tertiary)
+            PoolText("poolchat.messages.emptyMessage", fallback: "Be the first to say hello!")
+                .font(theme.fontBody)
+                .foregroundColor(theme.textTertiary)
 
             Spacer()
         }
@@ -1561,6 +1595,9 @@ struct MessageBubbleView: View {
     let onHideReactionPicker: () -> Void
     let onToggleReaction: (String) -> Void
     let onPollVote: (String) -> Void
+
+    @ObservedObject private var design = PoolDesign.shared
+    @Environment(\.colorScheme) private var scheme
 
     private let avatarSize: CGFloat = 32
     private let bubbleSpacing: CGFloat = 8
@@ -1647,15 +1684,15 @@ struct MessageBubbleView: View {
                 HStack(spacing: 4) {
                     Text(message.senderName)
                         .font(.system(size: 11, weight: .medium))
-                        .foregroundStyle(.secondary)
+                        .foregroundColor(design.snapshot(dark: scheme == .dark).textSecondary)
 
                     Text("*")
                         .font(.system(size: 8))
-                        .foregroundStyle(.quaternary)
+                        .foregroundColor(design.snapshot(dark: scheme == .dark).textTertiary)
 
                     Text(message.timestamp.formatted(date: .omitted, time: .shortened))
                         .font(.system(size: 11))
-                        .foregroundStyle(.tertiary)
+                        .foregroundColor(design.snapshot(dark: scheme == .dark).textTertiary)
                 }
                 .padding(.leading, 4)
 
@@ -1698,7 +1735,7 @@ struct MessageBubbleView: View {
                     } else {
                         Text(String(message.senderName.prefix(1)).uppercased())
                             .font(.system(size: 13, weight: .semibold))
-                            .foregroundStyle(.white)
+                            .foregroundColor(design.snapshot(dark: scheme == .dark).textOnAccent)
                     }
                 }
             )
@@ -1712,13 +1749,13 @@ struct MessageBubbleView: View {
             Button {
                 onReply()
             } label: {
-                Label("Reply", systemImage: "arrowshape.turn.up.left")
+                poolMenuLabel("poolchat.message.reply", fallback: "Reply", icon: "reply", systemFallback: "arrowshape.turn.up.left")
             }
 
             Button {
                 onShowReactionPicker()
             } label: {
-                Label("Add Reaction", systemImage: "face.smiling")
+                poolMenuLabel("poolchat.message.addReaction", fallback: "Add Reaction", icon: "face-smile", systemFallback: "face.smiling")
             }
 
             if let text = message.text {
@@ -1729,7 +1766,7 @@ struct MessageBubbleView: View {
                     NSPasteboard.general.setString(text, forType: .string)
                     #endif
                 } label: {
-                    Label("Copy", systemImage: "doc.on.doc")
+                    poolMenuLabel("common.copy", fallback: "Copy", icon: "copy", systemFallback: "doc.on.doc")
                 }
             }
         }
@@ -1794,8 +1831,7 @@ struct MessageBubbleView: View {
     }
 
     private var avatarColor: Color {
-        let colors: [Color] = [.blue, .green, .orange, .purple, .pink, .cyan, .yellow, .red]
-        return colors[message.avatarColorIndex % colors.count]
+        PoolUserProfile.availableColors[message.avatarColorIndex % PoolUserProfile.availableColors.count]
     }
 }
 
@@ -1806,28 +1842,32 @@ struct ReplyPreviewBubble: View {
     let previewText: String
     let isFromLocalUser: Bool
 
+    @ObservedObject private var design = PoolDesign.shared
+    @Environment(\.colorScheme) private var scheme
+
     var body: some View {
-        HStack(spacing: 8) {
+        let theme = design.snapshot(dark: scheme == .dark)
+        HStack(spacing: theme.spacingS) {
             Rectangle()
-                .fill(isFromLocalUser ? Color.white.opacity(0.5) : Color.blue)
+                .fill(isFromLocalUser ? theme.textOnAccent.opacity(0.5) : theme.accent)
                 .frame(width: 3)
 
             VStack(alignment: .leading, spacing: 2) {
                 Text(senderName)
                     .font(.caption.weight(.semibold))
-                    .foregroundStyle(isFromLocalUser ? .white.opacity(0.9) : .blue)
+                    .foregroundColor(isFromLocalUser ? theme.textOnAccent.opacity(0.9) : theme.accent)
 
                 Text(previewText)
                     .font(.caption)
-                    .foregroundStyle(isFromLocalUser ? .white.opacity(0.7) : .secondary)
+                    .foregroundColor(isFromLocalUser ? theme.textOnAccent.opacity(0.7) : theme.textSecondary)
                     .lineLimit(1)
             }
         }
-        .padding(.horizontal, 10)
-        .padding(.vertical, 6)
+        .padding(.horizontal, theme.spacingS + 2)
+        .padding(.vertical, theme.spacingXS + 2)
         .background(
-            RoundedRectangle(cornerRadius: 10)
-                .fill(isFromLocalUser ? Color.blue.opacity(0.3) : Color.tertiarySystemGroupedBackgroundColor)
+            RoundedRectangle(cornerRadius: theme.radiusMedium, style: .continuous)
+                .fill(isFromLocalUser ? theme.accent.opacity(0.3) : theme.surfaceSecondary)
         )
     }
 }
@@ -1838,8 +1878,12 @@ struct QuickReactionPicker: View {
     let onSelect: (String) -> Void
     let onDismiss: () -> Void
 
+    @ObservedObject private var design = PoolDesign.shared
+    @Environment(\.colorScheme) private var scheme
+
     var body: some View {
-        HStack(spacing: 8) {
+        let theme = design.snapshot(dark: scheme == .dark)
+        HStack(spacing: theme.spacingS) {
             ForEach(RichChatMessage.quickReactions, id: \.self) { emoji in
                 Button {
                     onSelect(emoji)
@@ -1850,12 +1894,12 @@ struct QuickReactionPicker: View {
                 .buttonStyle(.plain)
             }
         }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 8)
+        .padding(.horizontal, theme.spacingM)
+        .padding(.vertical, theme.spacingS)
         .background(
             Capsule()
-                .fill(Color.secondarySystemGroupedBackgroundColor)
-                .shadow(color: .black.opacity(0.1), radius: 8, y: 2)
+                .fill(theme.surfaceElevated)
+                .shadow(color: theme.shadow.opacity(0.1), radius: 8, y: 2)
         )
     }
 }
@@ -1867,35 +1911,39 @@ struct ReactionsDisplayView: View {
     let localPeerID: String
     let onToggleReaction: (String) -> Void
 
+    @ObservedObject private var design = PoolDesign.shared
+    @Environment(\.colorScheme) private var scheme
+
     var body: some View {
-        HStack(spacing: 6) {
+        let theme = design.snapshot(dark: scheme == .dark)
+        HStack(spacing: theme.spacingXS + 2) {
             ForEach(reactions, id: \.emoji) { reaction in
                 Button {
                     onToggleReaction(reaction.emoji)
                 } label: {
-                    HStack(spacing: 4) {
+                    HStack(spacing: theme.spacingXS) {
                         Text(reaction.emoji)
                             .font(.system(size: 14))
 
                         if reaction.peerIDs.count > 1 {
                             Text("\(reaction.peerIDs.count)")
                                 .font(.system(size: 11, weight: .medium))
-                                .foregroundStyle(.secondary)
+                                .foregroundColor(theme.textSecondary)
                         }
                     }
-                    .padding(.horizontal, 8)
-                    .padding(.vertical, 4)
+                    .padding(.horizontal, theme.spacingS)
+                    .padding(.vertical, theme.spacingXS)
                     .background(
                         Capsule()
                             .fill(reaction.peerIDs.contains(localPeerID)
-                                  ? Color.blue.opacity(0.2)
-                                  : Color.tertiarySystemGroupedBackgroundColor)
+                                  ? theme.accent.opacity(0.2)
+                                  : theme.surfaceSecondary)
                     )
                     .overlay(
                         Capsule()
                             .strokeBorder(
                                 reaction.peerIDs.contains(localPeerID)
-                                    ? Color.blue.opacity(0.5)
+                                    ? theme.accent.opacity(0.5)
                                     : Color.clear,
                                 lineWidth: 1
                             )
@@ -1925,32 +1973,37 @@ struct PollMessageBubble: View {
         pollData.canVote(peerID: localPeerID)
     }
 
-    var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            // Poll header
-            HStack(spacing: 8) {
-                Image(systemName: "chart.bar.fill")
-                    .font(.system(size: 14))
-                    .foregroundStyle(.blue)
+    @ObservedObject private var design = PoolDesign.shared
+    @Environment(\.colorScheme) private var scheme
 
-                Text("Poll")
+    var body: some View {
+        let theme = design.snapshot(dark: scheme == .dark)
+        VStack(alignment: .leading, spacing: theme.spacingM) {
+            // Poll header
+            HStack(spacing: theme.spacingS) {
+                PoolIcon("chart-bar", size: 14, systemFallback: "chart.bar.fill")
+                    .foregroundColor(theme.accent)
+
+                PoolText("poolchat.poll.label", fallback: "Poll")
                     .font(.caption.weight(.semibold))
-                    .foregroundStyle(.blue)
+                    .foregroundColor(theme.accent)
 
                 Spacer()
 
-                Text("\(pollData.totalVotes) vote\(pollData.totalVotes == 1 ? "" : "s")")
+                Text(pollData.totalVotes == 1
+                     ? poolString("poolchat.poll.voteCountOne", fallback: "1 vote", args: ["count": "1"])
+                     : poolString("poolchat.poll.voteCount", fallback: "\(pollData.totalVotes) votes", args: ["count": "\(pollData.totalVotes)"]))
                     .font(.caption)
-                    .foregroundStyle(.secondary)
+                    .foregroundColor(theme.textSecondary)
             }
 
             // Question
             Text(pollData.question)
                 .font(.subheadline.weight(.semibold))
-                .foregroundStyle(.primary)
+                .foregroundColor(theme.textPrimary)
 
             // Options
-            VStack(spacing: 8) {
+            VStack(spacing: theme.spacingS) {
                 ForEach(pollData.options, id: \.self) { option in
                     PollOptionRow(
                         option: option,
@@ -1968,26 +2021,25 @@ struct PollMessageBubble: View {
             HStack {
                 Text(timestamp.formatted(date: .omitted, time: .shortened))
                     .font(.caption2)
-                    .foregroundStyle(.tertiary)
+                    .foregroundColor(theme.textTertiary)
 
                 Spacer()
 
                 if votedOption != nil && !pollData.allowVoteChange {
-                    HStack(spacing: 4) {
-                        Image(systemName: "lock.fill")
-                            .font(.system(size: 9))
-                        Text("Vote locked")
+                    HStack(spacing: theme.spacingXS) {
+                        PoolIcon("lock", size: 9, systemFallback: "lock.fill")
+                        PoolText("poolchat.poll.locked", fallback: "Vote locked")
                             .font(.caption2)
                     }
-                    .foregroundStyle(.secondary)
+                    .foregroundColor(theme.textSecondary)
                 }
             }
         }
-        .padding(14)
+        .padding(theme.spacingL)
         .frame(maxWidth: 280, alignment: .leading)
         .background(
-            RoundedRectangle(cornerRadius: 16)
-                .fill(Color.tertiarySystemGroupedBackgroundColor)
+            RoundedRectangle(cornerRadius: theme.radiusLarge, style: .continuous)
+                .fill(theme.surfaceSecondary)
         )
     }
 }
@@ -2001,14 +2053,18 @@ struct PollOptionRow: View {
     let canChangeVote: Bool  // ISSUE 5: Whether the user can change their vote
     let onVote: () -> Void
 
+    @ObservedObject private var design = PoolDesign.shared
+    @Environment(\.colorScheme) private var scheme
+
     var body: some View {
+        let theme = design.snapshot(dark: scheme == .dark)
         Button(action: onVote) {
             ZStack(alignment: .leading) {
                 // Progress bar background
                 GeometryReader { geometry in
                     if hasVoted {
-                        RoundedRectangle(cornerRadius: 8)
-                            .fill(isSelected ? Color.blue.opacity(0.3) : Color.gray.opacity(0.15))
+                        RoundedRectangle(cornerRadius: theme.radiusSmall, style: .continuous)
+                            .fill(isSelected ? theme.accent.opacity(0.3) : theme.textTertiary.opacity(0.15))
                             .frame(width: geometry.size.width * percentage)
                     }
                 }
@@ -2017,33 +2073,32 @@ struct PollOptionRow: View {
                     // Option text
                     Text(option)
                         .font(.subheadline)
-                        .foregroundStyle(.primary)
+                        .foregroundColor(theme.textPrimary)
 
                     Spacer()
 
                     // Vote indicator / percentage
                     if hasVoted {
-                        HStack(spacing: 4) {
+                        HStack(spacing: theme.spacingXS) {
                             if isSelected {
-                                Image(systemName: "checkmark.circle.fill")
-                                    .font(.system(size: 14))
-                                    .foregroundStyle(.blue)
+                                PoolIcon("circle-check", size: 14, systemFallback: "checkmark.circle.fill")
+                                    .foregroundColor(theme.accent)
                             }
 
                             Text("\(Int(percentage * 100))%")
                                 .font(.caption.weight(.medium))
-                                .foregroundStyle(.secondary)
+                                .foregroundColor(theme.textSecondary)
                         }
                     }
                 }
-                .padding(.horizontal, 12)
-                .padding(.vertical, 10)
+                .padding(.horizontal, theme.spacingM)
+                .padding(.vertical, theme.spacingS + 2)
             }
             .frame(height: 40)
             .background(
-                RoundedRectangle(cornerRadius: 8)
+                RoundedRectangle(cornerRadius: theme.radiusSmall, style: .continuous)
                     .strokeBorder(
-                        isSelected ? Color.blue : Color.gray.opacity(0.3),
+                        isSelected ? theme.accent : theme.border,
                         lineWidth: isSelected ? 2 : 1
                     )
             )
@@ -2065,7 +2120,11 @@ struct TextMessageBubble: View {
     var localPeerID: String = ""
     var showTimestamp: Bool = true
 
+    @ObservedObject private var design = PoolDesign.shared
+    @Environment(\.colorScheme) private var scheme
+
     var body: some View {
+        let theme = design.snapshot(dark: scheme == .dark)
         VStack(alignment: isFromLocalUser ? .trailing : .leading, spacing: 2) {
             TextWithMentions(
                 text: text,
@@ -2074,17 +2133,17 @@ struct TextMessageBubble: View {
                 localPeerID: localPeerID
             )
             .font(.body)
-            .padding(.horizontal, 12)
-            .padding(.vertical, 8)
+            .padding(.horizontal, theme.spacingM)
+            .padding(.vertical, theme.spacingS)
             .background(
                 BubbleShape(isFromLocalUser: isFromLocalUser)
-                    .fill(isFromLocalUser ? Color.blue : Color.tertiarySystemGroupedBackgroundColor)
+                    .fill(isFromLocalUser ? theme.accent : theme.surfaceSecondary)
             )
 
             if showTimestamp {
                 Text(timestamp.formatted(date: .omitted, time: .shortened))
                     .font(.system(size: 10))
-                    .foregroundStyle(.tertiary)
+                    .foregroundColor(theme.textTertiary)
                     .padding(.horizontal, 4)
             }
         }
@@ -2111,14 +2170,18 @@ struct ImageMessageBubble: View {
     let timestamp: Date
     var showTimestamp: Bool = true
 
+    @ObservedObject private var design = PoolDesign.shared
+    @Environment(\.colorScheme) private var scheme
+
     var body: some View {
+        let theme = design.snapshot(dark: scheme == .dark)
         VStack(alignment: isFromLocalUser ? .trailing : .leading, spacing: 2) {
             if let data = imageData, let image = platformImage(from: data) {
                 image
                     .resizable()
                     .aspectRatio(contentMode: .fill)
                     .frame(maxWidth: 200, maxHeight: 200)
-                    .clipShape(RoundedRectangle(cornerRadius: 14))
+                    .clipShape(RoundedRectangle(cornerRadius: theme.radiusLarge, style: .continuous))
                     .overlay(alignment: .bottomTrailing) {
                         // Timestamp overlay on image (always shown for context)
                         Text(timestamp.formatted(date: .omitted, time: .shortened))
@@ -2133,20 +2196,19 @@ struct ImageMessageBubble: View {
                             .padding(6)
                     }
             } else {
-                RoundedRectangle(cornerRadius: 14)
-                    .fill(Color.tertiarySystemGroupedBackgroundColor)
+                RoundedRectangle(cornerRadius: theme.radiusLarge, style: .continuous)
+                    .fill(theme.surfaceSecondary)
                     .frame(width: 150, height: 150)
                     .overlay(
-                        Image(systemName: "photo")
-                            .font(.system(size: 32))
-                            .foregroundStyle(.tertiary)
+                        PoolIcon("image", size: 32, systemFallback: "photo")
+                            .foregroundColor(theme.textTertiary)
                     )
             }
 
             if showTimestamp && imageData == nil {
                 Text(timestamp.formatted(date: .omitted, time: .shortened))
                     .font(.system(size: 10))
-                    .foregroundStyle(.tertiary)
+                    .foregroundColor(theme.textTertiary)
                     .padding(.horizontal, 4)
             }
         }
@@ -2164,29 +2226,32 @@ struct VoiceMessageBubble: View {
     var showTimestamp: Bool = true
     let onPlayPause: () -> Void
 
+    @ObservedObject private var design = PoolDesign.shared
+    @Environment(\.colorScheme) private var scheme
+
     var body: some View {
+        let theme = design.snapshot(dark: scheme == .dark)
         VStack(alignment: isFromLocalUser ? .trailing : .leading, spacing: 2) {
-            HStack(spacing: 10) {
+            HStack(spacing: theme.spacingS + 2) {
                 Button(action: onPlayPause) {
-                    Image(systemName: isPlaying ? "pause.fill" : "play.fill")
-                        .font(.system(size: 14))
-                        .foregroundStyle(isFromLocalUser ? .white : .blue)
+                    PoolIcon(isPlaying ? "pause" : "play", size: 14, systemFallback: isPlaying ? "pause.fill" : "play.fill")
+                        .foregroundColor(isFromLocalUser ? theme.textOnAccent : theme.accent)
                         .frame(width: 32, height: 32)
                         .background(
                             Circle()
-                                .fill(isFromLocalUser ? Color.white.opacity(0.2) : Color.blue.opacity(0.15))
+                                .fill(isFromLocalUser ? theme.textOnAccent.opacity(0.2) : theme.accent.opacity(0.15))
                         )
                 }
 
-                VStack(alignment: .leading, spacing: 4) {
+                VStack(alignment: .leading, spacing: theme.spacingXS) {
                     // Waveform
                     GeometryReader { geometry in
                         ZStack(alignment: .leading) {
                             WaveformView()
-                                .foregroundStyle(isFromLocalUser ? Color.white.opacity(0.4) : Color.secondary.opacity(0.4))
+                                .foregroundColor(isFromLocalUser ? theme.textOnAccent.opacity(0.4) : theme.textSecondary.opacity(0.4))
 
                             WaveformView()
-                                .foregroundStyle(isFromLocalUser ? .white : .blue)
+                                .foregroundColor(isFromLocalUser ? theme.textOnAccent : theme.accent)
                                 .mask(
                                     Rectangle()
                                         .frame(width: geometry.size.width * progress)
@@ -2197,21 +2262,21 @@ struct VoiceMessageBubble: View {
 
                     Text(duration.formattedDuration)
                         .font(.system(size: 11))
-                        .foregroundStyle(isFromLocalUser ? .white.opacity(0.8) : .secondary)
+                        .foregroundColor(isFromLocalUser ? theme.textOnAccent.opacity(0.8) : theme.textSecondary)
                 }
                 .frame(width: 100)
             }
-            .padding(.horizontal, 10)
-            .padding(.vertical, 8)
+            .padding(.horizontal, theme.spacingS + 2)
+            .padding(.vertical, theme.spacingS)
             .background(
                 BubbleShape(isFromLocalUser: isFromLocalUser)
-                    .fill(isFromLocalUser ? Color.blue : Color.tertiarySystemGroupedBackgroundColor)
+                    .fill(isFromLocalUser ? theme.accent : theme.surfaceSecondary)
             )
 
             if showTimestamp {
                 Text(timestamp.formatted(date: .omitted, time: .shortened))
                     .font(.system(size: 10))
-                    .foregroundStyle(.tertiary)
+                    .foregroundColor(theme.textTertiary)
                     .padding(.horizontal, 4)
             }
         }
@@ -2244,7 +2309,11 @@ struct EmojiMessageBubble: View {
     let timestamp: Date
     var showTimestamp: Bool = true
 
+    @ObservedObject private var design = PoolDesign.shared
+    @Environment(\.colorScheme) private var scheme
+
     var body: some View {
+        let theme = design.snapshot(dark: scheme == .dark)
         VStack(alignment: isFromLocalUser ? .trailing : .leading, spacing: 2) {
             Text(emoji)
                 .font(.system(size: 48))
@@ -2252,7 +2321,7 @@ struct EmojiMessageBubble: View {
             if showTimestamp {
                 Text(timestamp.formatted(date: .omitted, time: .shortened))
                     .font(.system(size: 10))
-                    .foregroundStyle(.tertiary)
+                    .foregroundColor(theme.textTertiary)
                     .padding(.horizontal, 4)
             }
         }
@@ -2264,15 +2333,19 @@ struct EmojiMessageBubble: View {
 struct SystemMessageView: View {
     let text: String
 
+    @ObservedObject private var design = PoolDesign.shared
+    @Environment(\.colorScheme) private var scheme
+
     var body: some View {
+        let theme = design.snapshot(dark: scheme == .dark)
         Text(text)
             .font(.caption)
-            .foregroundStyle(.secondary)
-            .padding(.horizontal, 14)
-            .padding(.vertical, 7)
+            .foregroundColor(theme.textSecondary)
+            .padding(.horizontal, theme.spacingL)
+            .padding(.vertical, theme.spacingXS + 3)
             .background(
                 Capsule()
-                    .fill(Color.tertiarySystemGroupedBackgroundColor)
+                    .fill(theme.surfaceSecondary)
             )
             .frame(maxWidth: .infinity)
     }
@@ -2293,7 +2366,11 @@ struct ChatInputBar: View {
     let onCreatePoll: () -> Void
     let isConnected: Bool
 
+    @ObservedObject private var design = PoolDesign.shared
+    @Environment(\.colorScheme) private var scheme
+
     var body: some View {
+        let theme = design.snapshot(dark: scheme == .dark)
         VStack(spacing: 0) {
             // Reply preview bar
             if let replyMessage = replyingToMessage {
@@ -2304,22 +2381,24 @@ struct ChatInputBar: View {
                 )
             }
 
-            HStack(spacing: 10) {
+            HStack(spacing: theme.spacingS + 2) {
                 // Attachment button (photo picker)
                 PhotosPicker(selection: $selectedPhotoItem, matching: .images) {
-                    Image(systemName: "photo.fill")
-                        .font(.system(size: 20))
-                        .foregroundStyle(isConnected ? .secondary : .quaternary)
-                        .frame(width: 36, height: 36)
+                    // `PhotosPicker`'s label builder is `@Sendable`, hence nonisolated;
+                    // `PoolDeferredLabel` moves construction into a main-actor `body`.
+                    PoolDeferredLabel {
+                        PoolIcon("image", size: 20, systemFallback: "photo.fill")
+                            .foregroundColor(isConnected ? theme.textSecondary : theme.textTertiary)
+                            .frame(width: 36, height: 36)
+                    }
                 }
                 .disabled(!isConnected)
 
                 // Poll button (group chat only)
                 if isGroupChat {
                     Button(action: onCreatePoll) {
-                        Image(systemName: "chart.bar.fill")
-                            .font(.system(size: 20))
-                            .foregroundStyle(isConnected ? .secondary : .quaternary)
+                        PoolIcon("chart-bar", size: 20, systemFallback: "chart.bar.fill")
+                            .foregroundColor(isConnected ? theme.textSecondary : theme.textTertiary)
                             .frame(width: 36, height: 36)
                     }
                     .disabled(!isConnected)
@@ -2329,22 +2408,21 @@ struct ChatInputBar: View {
                 Button(action: {
                     withAnimation { showEmojiPicker.toggle() }
                 }) {
-                    Image(systemName: showEmojiPicker ? "keyboard" : "face.smiling")
-                        .font(.system(size: 20))
-                        .foregroundStyle(isConnected ? .secondary : .quaternary)
+                    PoolIcon(showEmojiPicker ? "keyboard" : "face-smile", size: 20, systemFallback: showEmojiPicker ? "keyboard" : "face.smiling")
+                        .foregroundColor(isConnected ? theme.textSecondary : theme.textTertiary)
                         .frame(width: 36, height: 36)
                 }
                 .disabled(!isConnected)
 
                 // Text field
-                TextField("Message", text: $text)
+                TextField(poolString("poolchat.input.message", fallback: "Message"), text: $text)
                     .textFieldStyle(.plain)
                     .font(.body)
-                    .padding(.horizontal, 16)
-                    .padding(.vertical, 10)
+                    .padding(.horizontal, theme.spacingL)
+                    .padding(.vertical, theme.spacingS + 2)
                     .background(
-                        RoundedRectangle(cornerRadius: 20)
-                            .fill(Color.tertiarySystemGroupedBackgroundColor)
+                        RoundedRectangle(cornerRadius: theme.radiusLarge + 6, style: .continuous)
+                            .fill(theme.surfaceSecondary)
                     )
                     .disabled(!isConnected)
 
@@ -2352,34 +2430,32 @@ struct ChatInputBar: View {
                 if text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                     // Voice record button
                     Button(action: onStartVoiceRecording) {
-                        Image(systemName: "mic.fill")
-                            .font(.system(size: 18))
-                            .foregroundStyle(.white)
+                        PoolIcon("microphone", size: 18, systemFallback: "mic.fill")
+                            .foregroundColor(theme.textOnAccent)
                             .frame(width: 40, height: 40)
                             .background(
                                 Circle()
-                                    .fill(isConnected ? Color.blue : Color.gray)
+                                    .fill(isConnected ? theme.accent : theme.textTertiary)
                             )
                     }
                     .disabled(!isConnected)
                 } else {
                     // Send button
                     Button(action: onSendText) {
-                        Image(systemName: "arrow.up")
-                            .font(.system(size: 18, weight: .semibold))
-                            .foregroundStyle(.white)
+                        PoolIcon("arrow-up", size: 18, weight: .solid, systemFallback: "arrow.up")
+                            .foregroundColor(theme.textOnAccent)
                             .frame(width: 40, height: 40)
                             .background(
                                 Circle()
-                                    .fill(Color.blue)
+                                    .fill(theme.accent)
                             )
                     }
                 }
             }
-            .padding(.horizontal, 12)
-            .padding(.vertical, 10)
+            .padding(.horizontal, theme.spacingM)
+            .padding(.vertical, theme.spacingS + 2)
         }
-        .background(Color.secondarySystemGroupedBackgroundColor)
+        .background(theme.surface)
     }
 }
 
@@ -2390,34 +2466,37 @@ struct ReplyInputPreview: View {
     let previewText: String
     let onCancel: () -> Void
 
+    @ObservedObject private var design = PoolDesign.shared
+    @Environment(\.colorScheme) private var scheme
+
     var body: some View {
-        HStack(spacing: 12) {
+        let theme = design.snapshot(dark: scheme == .dark)
+        HStack(spacing: theme.spacingM) {
             Rectangle()
-                .fill(Color.blue)
+                .fill(theme.accent)
                 .frame(width: 3)
 
             VStack(alignment: .leading, spacing: 2) {
-                Text("Replying to \(senderName)")
+                Text(poolString("poolchat.input.replyingTo", fallback: "Replying to \(senderName)", args: ["name": senderName]))
                     .font(.caption.weight(.semibold))
-                    .foregroundStyle(.blue)
+                    .foregroundColor(theme.accent)
 
                 Text(previewText)
                     .font(.caption)
-                    .foregroundStyle(.secondary)
+                    .foregroundColor(theme.textSecondary)
                     .lineLimit(1)
             }
 
             Spacer()
 
             Button(action: onCancel) {
-                Image(systemName: "xmark.circle.fill")
-                    .font(.system(size: 20))
-                    .foregroundStyle(.secondary)
+                PoolIcon("circle-xmark", size: 20, systemFallback: "xmark.circle.fill")
+                    .foregroundColor(theme.textSecondary)
             }
         }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 8)
-        .background(Color.tertiarySystemGroupedBackgroundColor)
+        .padding(.horizontal, theme.spacingM)
+        .padding(.vertical, theme.spacingS)
+        .background(theme.surfaceSecondary)
     }
 }
 
@@ -2444,6 +2523,9 @@ struct PollCreationSheet: View {
     let onCreate: () -> Void
     let onCancel: () -> Void
 
+    @ObservedObject private var design = PoolDesign.shared
+    @Environment(\.colorScheme) private var scheme
+
     // ISSUE 4 FIX: Use identifiable local state to prevent "index out of range" crash
     // The crash occurred because ForEach(options.indices) with $options[index] binding
     // can access stale indices when the array is mutated during TextField editing.
@@ -2459,23 +2541,23 @@ struct PollCreationSheet: View {
         NavigationView {
             Form {
                 Section {
-                    TextField("Ask a question...", text: $question)
+                    TextField(poolString("poolchat.poll.questionPlaceholder", fallback: "Ask a question…"), text: $question)
                 } header: {
-                    Text("Question")
+                    Text(poolString("poolchat.poll.question", fallback: "Question"))
                 }
 
                 Section {
                     // ISSUE 4 FIX: Use identifiable items with ForEach to prevent crash
                     ForEach($pollOptions) { $option in
                         HStack {
-                            TextField("Option", text: $option.text)
+                            TextField(poolString("poolchat.poll.option", fallback: "Option"), text: $option.text)
 
                             if pollOptions.count > 2 {
                                 Button {
                                     removeOption(option.id)
                                 } label: {
-                                    Image(systemName: "minus.circle.fill")
-                                        .foregroundStyle(.red)
+                                    PoolIcon("circle-minus", size: 18, systemFallback: "minus.circle.fill")
+                                        .foregroundColor(design.snapshot(dark: scheme == .dark).danger)
                                 }
                             }
                         }
@@ -2485,31 +2567,36 @@ struct PollCreationSheet: View {
                         Button {
                             addOption()
                         } label: {
-                            Label("Add Option", systemImage: "plus.circle")
+                            HStack(spacing: 8) {
+                                PoolIcon("circle-plus", size: 16, systemFallback: "plus.circle")
+                                PoolText("poolchat.poll.addOption", fallback: "Add Option")
+                            }
                         }
                     }
                 } header: {
-                    Text("Options")
+                    Text(poolString("poolchat.poll.options", fallback: "Options"))
                 } footer: {
-                    Text("Add 2-6 options for voters to choose from")
+                    Text(poolString("poolchat.poll.optionsFooter", fallback: "Add 2-6 options for voters to choose from"))
                 }
 
                 // ISSUE 5: Allow vote change toggle
                 Section {
-                    Toggle("Allow changing vote", isOn: $allowVoteChange)
+                    Toggle(poolString("poolchat.poll.allowChange", fallback: "Allow changing vote"), isOn: $allowVoteChange)
                 } footer: {
-                    Text(allowVoteChange ? "Voters can change their vote after voting" : "Voters can only vote once and cannot change their vote")
+                    Text(allowVoteChange
+                         ? poolString("poolchat.poll.allowChangeOn", fallback: "Voters can change their vote after voting")
+                         : poolString("poolchat.poll.allowChangeOff", fallback: "Voters can only vote once and cannot change their vote"))
                 }
             }
-            .navigationTitle("Create Poll")
+            .navigationTitle(poolString("poolchat.poll.create", fallback: "Create Poll"))
             .crossPlatformInlineNavigationTitle()
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
-                    Button("Cancel", action: onCancel)
+                    Button(poolString("common.cancel", fallback: "Cancel"), action: onCancel)
                 }
 
                 ToolbarItem(placement: .confirmationAction) {
-                    Button("Create") {
+                    Button(poolString("poolchat.poll.createButton", fallback: "Create")) {
                         syncOptionsToBinding()
                         onCreate()
                     }
@@ -2549,28 +2636,30 @@ struct VoiceRecordingIndicator: View {
     let onCancel: () -> Void
     let onSend: () -> Void
 
+    @ObservedObject private var design = PoolDesign.shared
+    @Environment(\.colorScheme) private var scheme
     @State private var pulseAnimation = false
 
     var body: some View {
-        HStack(spacing: 16) {
+        let theme = design.snapshot(dark: scheme == .dark)
+        HStack(spacing: theme.spacingL) {
             // Cancel button
             Button(action: onCancel) {
-                Image(systemName: "xmark")
-                    .font(.system(size: 16, weight: .semibold))
-                    .foregroundStyle(.white)
+                PoolIcon("xmark", size: 16, systemFallback: "xmark")
+                    .foregroundColor(theme.textOnAccent)
                     .frame(width: 36, height: 36)
                     .background(
                         Circle()
-                            .fill(Color.red)
+                            .fill(theme.danger)
                     )
             }
 
             Spacer()
 
             // Recording indicator
-            HStack(spacing: 10) {
+            HStack(spacing: theme.spacingS + 2) {
                 Circle()
-                    .fill(Color.red)
+                    .fill(theme.danger)
                     .frame(width: 12, height: 12)
                     .scaleEffect(pulseAnimation ? 1.2 : 1.0)
                     .opacity(pulseAnimation ? 0.7 : 1.0)
@@ -2578,6 +2667,7 @@ struct VoiceRecordingIndicator: View {
 
                 Text(duration.formattedDuration)
                     .font(.system(size: 16, weight: .semibold, design: .monospaced))
+                    .foregroundColor(theme.textPrimary)
             }
             .onAppear { pulseAnimation = true }
 
@@ -2585,19 +2675,18 @@ struct VoiceRecordingIndicator: View {
 
             // Send button
             Button(action: onSend) {
-                Image(systemName: "arrow.up")
-                    .font(.system(size: 18, weight: .semibold))
-                    .foregroundStyle(.white)
+                PoolIcon("arrow-up", size: 18, weight: .solid, systemFallback: "arrow.up")
+                    .foregroundColor(theme.textOnAccent)
                     .frame(width: 44, height: 44)
                     .background(
                         Circle()
-                            .fill(Color.blue)
+                            .fill(theme.accent)
                     )
             }
         }
-        .padding(.horizontal, 16)
-        .padding(.vertical, 12)
-        .background(Color.secondarySystemGroupedBackgroundColor)
+        .padding(.horizontal, theme.spacingL)
+        .padding(.vertical, theme.spacingM)
+        .background(theme.surface)
     }
 }
 
@@ -2608,31 +2697,38 @@ struct EmojiPickerView: View {
     let onEmojiSelected: (String) -> Void
     let onEmojiSent: (String) -> Void
 
+    @ObservedObject private var design = PoolDesign.shared
+    @Environment(\.colorScheme) private var scheme
+
     var body: some View {
+        let theme = design.snapshot(dark: scheme == .dark)
         VStack(spacing: 0) {
             // Category tabs
             ScrollView(.horizontal, showsIndicators: false) {
-                HStack(spacing: 6) {
+                HStack(spacing: theme.spacingXS + 2) {
                     ForEach(EmojiCategory.allCases) { category in
                         Button(action: {
                             selectedCategory = category
                         }) {
+                            // `category.icon` is an SF-Symbol name supplied by the
+                            // EmojiCategory model (read-only); rendered directly so
+                            // no FA-name mapping table has to be maintained here.
                             Image(systemName: category.icon)
                                 .font(.system(size: 18))
-                                .foregroundStyle(selectedCategory == category ? .white : .secondary)
+                                .foregroundColor(selectedCategory == category ? theme.textOnAccent : theme.textSecondary)
                                 .frame(width: 40, height: 40)
                                 .background(
                                     selectedCategory == category ?
-                                    Color.blue :
+                                    theme.accent :
                                     Color.clear
                                 )
                                 .clipShape(Circle())
                         }
                     }
                 }
-                .padding(.horizontal, 12)
+                .padding(.horizontal, theme.spacingM)
             }
-            .padding(.vertical, 10)
+            .padding(.vertical, theme.spacingS + 2)
 
             Divider()
 
@@ -2654,12 +2750,12 @@ struct EmojiPickerView: View {
                         )
                     }
                 }
-                .padding(.horizontal, 12)
-                .padding(.vertical, 10)
+                .padding(.horizontal, theme.spacingM)
+                .padding(.vertical, theme.spacingS + 2)
             }
             .frame(height: 200)
         }
-        .background(Color.secondarySystemGroupedBackgroundColor)
+        .background(theme.surface)
     }
 }
 
@@ -2669,22 +2765,25 @@ struct MentionPickerView: View {
     let peers: [MentionInfo]
     let onSelect: (MentionInfo) -> Void
 
+    @ObservedObject private var design = PoolDesign.shared
+    @Environment(\.colorScheme) private var scheme
+
     var body: some View {
+        let theme = design.snapshot(dark: scheme == .dark)
         VStack(spacing: 0) {
             // Header
             HStack {
-                Image(systemName: "at")
-                    .font(.system(size: 12, weight: .semibold))
-                    .foregroundStyle(.blue)
+                PoolIcon("at", size: 12, systemFallback: "at")
+                    .foregroundColor(theme.accent)
 
-                Text("Mention someone")
+                PoolText("poolchat.mention.title", fallback: "Mention someone")
                     .font(.system(size: 12, weight: .medium))
-                    .foregroundStyle(.secondary)
+                    .foregroundColor(theme.textSecondary)
 
                 Spacer()
             }
-            .padding(.horizontal, 12)
-            .padding(.vertical, 8)
+            .padding(.horizontal, theme.spacingM)
+            .padding(.vertical, theme.spacingS)
 
             Divider()
 
@@ -2703,11 +2802,11 @@ struct MentionPickerView: View {
             }
             .frame(maxHeight: 180)
         }
-        .background(Color.secondarySystemGroupedBackgroundColor)
-        .clipShape(RoundedRectangle(cornerRadius: 12))
-        .shadow(color: .black.opacity(0.1), radius: 8, y: -2)
-        .padding(.horizontal, 12)
-        .padding(.bottom, 4)
+        .background(theme.surface)
+        .clipShape(RoundedRectangle(cornerRadius: theme.radiusMedium, style: .continuous))
+        .shadow(color: theme.shadow.opacity(0.1), radius: 8, y: -2)
+        .padding(.horizontal, theme.spacingM)
+        .padding(.bottom, theme.spacingXS)
     }
 }
 
@@ -2715,35 +2814,38 @@ struct MentionPeerRow: View {
     let peer: MentionInfo
     let onTap: () -> Void
 
+    @ObservedObject private var design = PoolDesign.shared
+    @Environment(\.colorScheme) private var scheme
+
     private var avatarColor: Color {
-        let colors: [Color] = [.blue, .green, .orange, .purple, .pink, .cyan, .yellow, .red]
-        return colors[peer.avatarColorIndex % colors.count]
+        PoolUserProfile.availableColors[peer.avatarColorIndex % PoolUserProfile.availableColors.count]
     }
 
     var body: some View {
+        let theme = design.snapshot(dark: scheme == .dark)
         Button(action: onTap) {
-            HStack(spacing: 12) {
+            HStack(spacing: theme.spacingM) {
                 Circle()
                     .fill(avatarColor)
                     .frame(width: 36, height: 36)
                     .overlay(
                         Text(String(peer.displayName.prefix(1)).uppercased())
                             .font(.system(size: 14, weight: .semibold))
-                            .foregroundStyle(.white)
+                            .foregroundColor(theme.textOnAccent)
                     )
 
                 Text(peer.displayName)
                     .font(.system(size: 15, weight: .medium))
-                    .foregroundStyle(.primary)
+                    .foregroundColor(theme.textPrimary)
 
                 Spacer()
 
                 Text("@\(peer.displayName.replacingOccurrences(of: " ", with: "_"))")
                     .font(.system(size: 12))
-                    .foregroundStyle(.secondary)
+                    .foregroundColor(theme.textSecondary)
             }
-            .padding(.horizontal, 12)
-            .padding(.vertical, 8)
+            .padding(.horizontal, theme.spacingM)
+            .padding(.vertical, theme.spacingS)
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
@@ -2758,11 +2860,20 @@ struct TextWithMentions: View {
     let isFromLocalUser: Bool
     let localPeerID: String
 
+    @ObservedObject private var design = PoolDesign.shared
+    @Environment(\.colorScheme) private var scheme
+
     var body: some View {
         highlightedText
     }
 
     private var highlightedText: Text {
+        let theme = design.snapshot(dark: scheme == .dark)
+        // Body text color: on-accent inside the sender's own bubble, primary otherwise.
+        let bodyColor = isFromLocalUser ? theme.textOnAccent : theme.textPrimary
+        // Mention accent: keep contrast inside the accent bubble by using on-accent there.
+        let mentionColor = isFromLocalUser ? theme.textOnAccent : theme.accent
+
         // Parse text and highlight @mentions
         var result = Text("")
         let pattern = "@([\\w]+)"
@@ -2779,7 +2890,7 @@ struct TextWithMentions: View {
                 let beforeRange = NSRange(location: lastEnd, length: match.range.location - lastEnd)
                 let beforeText = nsText.substring(with: beforeRange)
                 result = result + Text(beforeText)
-                    .foregroundColor(isFromLocalUser ? .white : .primary)
+                    .foregroundColor(bodyColor)
             }
 
             // Add the mention with highlight
@@ -2787,7 +2898,7 @@ struct TextWithMentions: View {
             let isSelfMention = mentions.contains(localPeerID)
 
             result = result + Text(mentionText)
-                .foregroundColor(isFromLocalUser ? .white : .blue)
+                .foregroundColor(mentionColor)
                 .fontWeight(isSelfMention ? .bold : .medium)
                 .underline(isSelfMention)
 
@@ -2799,13 +2910,13 @@ struct TextWithMentions: View {
             let remainingRange = NSRange(location: lastEnd, length: nsText.length - lastEnd)
             let remainingText = nsText.substring(with: remainingRange)
             result = result + Text(remainingText)
-                .foregroundColor(isFromLocalUser ? .white : .primary)
+                .foregroundColor(bodyColor)
         }
 
         // If no matches, return original text
         if matches.isEmpty {
             return Text(text)
-                .foregroundColor(isFromLocalUser ? .white : .primary)
+                .foregroundColor(bodyColor)
         }
 
         return result
@@ -2825,14 +2936,6 @@ private func platformImage(from data: Data) -> Image? {
     return Image(nsImage: nsImage)
     #else
     return nil
-    #endif
-}
-
-private var poolGroupedBackgroundColor: Color {
-    #if canImport(UIKit)
-    Color(.systemGroupedBackground)
-    #else
-    Color(nsColor: .windowBackgroundColor)
     #endif
 }
 

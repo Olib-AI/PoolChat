@@ -5,6 +5,8 @@
 // StealthOS - stealthos.app
 
 import Foundation
+import SwiftUI
+import ConnectionPool
 
 /// Static configuration point for injecting dependencies into the PoolChat package.
 /// Must be configured before using any PoolChat services that require logging or storage.
@@ -44,5 +46,36 @@ public enum PoolChatConfiguration {
     public static var enableHistorySync: Bool {
         get { _lock.withLock { _enableHistorySync } }
         set { _lock.withLock { _enableHistorySync = newValue } }
+    }
+
+    // MARK: - UI design injection seams
+    //
+    // PoolChat cannot import the app's ThemeKit / IconKit / LanguageKit. The host
+    // wires these seams from `App/Integration/PoolChatBridge.swift`. They delegate
+    // to the shared `PoolDesign` store (defined in ConnectionPool) that both pool
+    // apps observe, so a single injection styles chat + calling UI too. When unset
+    // the package falls back to neutral colors, English strings, and SF Symbols.
+
+    /// Resolves a `PoolThemeSnapshot` of the live theme tokens for a color scheme.
+    @MainActor public static var themeResolver: (@MainActor (ColorScheme) -> PoolThemeSnapshot)? {
+        get { PoolDesign.shared.themeResolver }
+        set { PoolDesign.shared.themeResolver = newValue }
+    }
+
+    /// Resolves a LanguageKit key (+ optional interpolation args) to a string.
+    @MainActor public static var stringProvider: (@MainActor (String, [String: String]?) -> String)? {
+        get { PoolDesign.shared.stringProvider }
+        set { PoolDesign.shared.stringProvider = newValue }
+    }
+
+    /// Renders an FA icon name at a point size + weight (host uses IconKit).
+    @MainActor public static var iconRenderer: (@MainActor (String, CGFloat, PoolIconWeight) -> AnyView)? {
+        get { PoolDesign.shared.iconRenderer }
+        set { PoolDesign.shared.iconRenderer = newValue }
+    }
+
+    /// Notify the pool UI that the theme, appearance, or language changed.
+    @MainActor public static func notifyDesignChanged() {
+        PoolDesign.shared.invalidate()
     }
 }

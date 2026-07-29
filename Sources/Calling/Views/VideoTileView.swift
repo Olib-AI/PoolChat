@@ -84,9 +84,15 @@ public class VideoRenderView: UIView {
     }
 
     /// Display a CVPixelBuffer on the render layer.
+    ///
+    /// Goes through `sampleBufferRenderer` rather than `AVSampleBufferDisplayLayer`'s
+    /// own `AVQueuedSampleBufferRendering` conformance, which Apple deprecated in
+    /// iOS 18. The two drive the same queue (they share one timebase and one status),
+    /// but the header warns against mixing them, so every enqueue/flush/status read
+    /// in this view uses the renderer.
     func displayPixelBuffer(_ pixelBuffer: CVPixelBuffer?) {
         guard let pixelBuffer else {
-            displayLayer.flushAndRemoveImage()
+            displayLayer.sampleBufferRenderer.flush(removingDisplayedImage: true, completionHandler: nil)
             return
         }
 
@@ -116,11 +122,11 @@ public class VideoRenderView: UIView {
 
         guard let sampleBuffer else { return }
 
-        if displayLayer.status == .failed {
-            displayLayer.flush()
+        if displayLayer.sampleBufferRenderer.status == .failed {
+            displayLayer.sampleBufferRenderer.flush()
         }
 
-        displayLayer.enqueue(sampleBuffer)
+        displayLayer.sampleBufferRenderer.enqueue(sampleBuffer)
     }
 }
 #else

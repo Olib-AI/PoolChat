@@ -52,6 +52,14 @@ public final class ChatHistoryService: ObservableObject {
     /// Track which session IDs are currently active
     private var activeSessionIDs: Set<String> = []
 
+    /// INVARIANT: conversation IDs whose stored data exists but could not be read; saving those
+    /// conversations is blocked until a successful load — otherwise callers that treat the nil
+    /// load result as "new conversation" would overwrite the intact on-disk history.
+    private var unreadableConversationIDs: Set<String> = []
+
+    /// Same fail-closed guard for the group chat metadata list.
+    private var groupInfosLoadFailed = false
+
     // MARK: - Initialization
 
     private init() {}
@@ -92,10 +100,15 @@ public final class ChatHistoryService: ObservableObject {
             if let conversation = try await secureDataStore?.load(ChatConversation.self, forKey: key, category: Self.chatDataCategory) {
                 conversationCache[id] = conversation
                 messageIDIndex[id] = Set(conversation.messages.map { $0.id })
+                unreadableConversationIDs.remove(id)
                 return conversation
             }
+            unreadableConversationIDs.remove(id)
             return nil
         } catch {
+            // Present but unreadable — block saves of this conversation (fail closed) so the
+            // intact on-disk history is not overwritten by a freshly created empty conversation.
+            unreadableConversationIDs.insert(id)
             log("Failed to load conversation \(id): \(error)", level: .error, category: .security)
             self.error = "Failed to load conversation"
             return nil
@@ -116,6 +129,12 @@ public final class ChatHistoryService: ObservableObject {
 
     /// Save a conversation (updates cache and persists to disk)
     public func saveConversation(_ conversation: ChatConversation) async {
+        // INVARIANT: never overwrite an on-disk conversation that we failed to read.
+        guard !unreadableConversationIDs.contains(conversation.id) else {
+            log("Save blocked: conversation \(conversation.id) load previously failed; on-disk history preserved", level: .error, category: .security)
+            self.error = "Chat history could not be read — new messages are not being saved to protect it"
+            return
+        }
         do {
             var trimmedConversation = conversation
 
@@ -159,6 +178,8 @@ public final class ChatHistoryService: ObservableObject {
         do {
             let key = conversationKey(for: id)
             try await secureDataStore?.delete(forKey: key, category: Self.chatDataCategory)
+            // Explicit user-consented deletion removed the blob — lift the unreadable-save block.
+            unreadableConversationIDs.remove(id)
             log("Deleted conversation \(id)", category: .security)
         } catch {
             log("Failed to delete conversation: \(error)", level: .error, category: .security)
@@ -338,10 +359,14 @@ public final class ChatHistoryService: ObservableObject {
     public func loadGroupChatInfos() async -> [GroupChatInfo] {
         do {
             if let groups = try await secureDataStore?.load([GroupChatInfo].self, forKey: Self.groupMetadataKey, category: Self.chatDataCategory) {
+                groupInfosLoadFailed = false
                 return groups
             }
+            groupInfosLoadFailed = false
             return []
         } catch {
+            // Present but unreadable — block group-info saves so the intact on-disk list survives.
+            groupInfosLoadFailed = true
             log("Failed to load group chat infos: \(error)", level: .error, category: .security)
             return []
         }
@@ -349,6 +374,11 @@ public final class ChatHistoryService: ObservableObject {
 
     /// Save all group chat metadata
     public func saveGroupChatInfos(_ groups: [GroupChatInfo]) async {
+        // INVARIANT: never overwrite an on-disk group list that we failed to read.
+        guard !groupInfosLoadFailed else {
+            log("Save blocked: group chat infos load previously failed; on-disk data preserved", level: .error, category: .security)
+            return
+        }
         do {
             try await secureDataStore?.save(groups, forKey: Self.groupMetadataKey, category: Self.chatDataCategory)
             log("Saved \(groups.count) group chat infos", level: .debug, category: .security)
